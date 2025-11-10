@@ -543,61 +543,76 @@ class Simulation {
     }
     
     populateGrid() {
-        const totalCells = GRID_WIDTH * GRID_HEIGHT;
-        const waterCount = Math.floor(totalCells * 0.80);
-        const sandCount = Math.floor(totalCells * 0.15);
-        const airCount = Math.floor(totalCells * 0.05);
-        
-        // Distribute sand types (heavy, medium, light)
-        const sandHeavyCount = Math.floor(sandCount * 0.4);
-        const sandMediumCount = Math.floor(sandCount * 0.35);
-        const sandLightCount = sandCount - sandHeavyCount - sandMediumCount;
-        
-        const particles = [];
-        
-        // Add water
-        for (let i = 0; i < waterCount; i++) {
-            particles.push(PARTICLE_TYPES.WATER);
-        }
-        
-        // Add sand of different densities
-        for (let i = 0; i < sandHeavyCount; i++) {
-            particles.push(PARTICLE_TYPES.SAND_HEAVY);
-        }
-        for (let i = 0; i < sandMediumCount; i++) {
-            particles.push(PARTICLE_TYPES.SAND_MEDIUM);
-        }
-        for (let i = 0; i < sandLightCount; i++) {
-            particles.push(PARTICLE_TYPES.SAND_LIGHT);
-        }
-        
-        // Add air
-        for (let i = 0; i < airCount; i++) {
-            particles.push(PARTICLE_TYPES.AIR);
-        }
-        
-        // Shuffle and place particles
-        this.shuffle(particles);
-        
-        let index = 0;
+        // Initialize entire grid with water
         for (let y = 0; y < GRID_HEIGHT; y++) {
             for (let x = 0; x < GRID_WIDTH; x++) {
-                if (index < particles.length) {
-                    const particle = particles[index];
-                    this.grid[y][x] = particle;
-                    
-                    // Initialize sand particle properties
-                    if (particle === PARTICLE_TYPES.SAND_HEAVY ||
-                        particle === PARTICLE_TYPES.SAND_MEDIUM ||
-                        particle === PARTICLE_TYPES.SAND_LIGHT) {
-                        const friction = PHYSICS_PARAMS.SAND_FRICTION_MIN + 
-                                       Math.random() * (PHYSICS_PARAMS.SAND_FRICTION_MAX - PHYSICS_PARAMS.SAND_FRICTION_MIN);
-                        const mass = PHYSICS_PARAMS.SAND_MASS_MIN + 
-                                   Math.random() * (PHYSICS_PARAMS.SAND_MASS_MAX - PHYSICS_PARAMS.SAND_MASS_MIN);
-                        this.particleProps.setProperties(x, y, friction, mass);
+                this.grid[y][x] = PARTICLE_TYPES.WATER;
+            }
+        }
+        
+        // Create 20% sand layer at the top
+        const sandLayerHeight = Math.floor(GRID_HEIGHT * 0.20);
+        
+        // Distribute sand types (heavy, medium, light)
+        const sandTypes = [
+            PARTICLE_TYPES.SAND_HEAVY,
+            PARTICLE_TYPES.SAND_MEDIUM,
+            PARTICLE_TYPES.SAND_LIGHT
+        ];
+        
+        // Fill top 20% with sand of varied densities
+        for (let y = 0; y < sandLayerHeight; y++) {
+            for (let x = 0; x < GRID_WIDTH; x++) {
+                // Random sand type distribution
+                const rand = Math.random();
+                let sandType;
+                if (rand < 0.4) {
+                    sandType = PARTICLE_TYPES.SAND_HEAVY;
+                } else if (rand < 0.75) {
+                    sandType = PARTICLE_TYPES.SAND_MEDIUM;
+                } else {
+                    sandType = PARTICLE_TYPES.SAND_LIGHT;
+                }
+                
+                this.grid[y][x] = sandType;
+                
+                // Initialize sand particle properties with varied friction and mass
+                const friction = PHYSICS_PARAMS.SAND_FRICTION_MIN + 
+                               Math.random() * (PHYSICS_PARAMS.SAND_FRICTION_MAX - PHYSICS_PARAMS.SAND_FRICTION_MIN);
+                const mass = PHYSICS_PARAMS.SAND_MASS_MIN + 
+                           Math.random() * (PHYSICS_PARAMS.SAND_MASS_MAX - PHYSICS_PARAMS.SAND_MASS_MIN);
+                this.particleProps.setProperties(x, y, friction, mass);
+            }
+        }
+        
+        // Create bubble layer just below sand (at least 3 voxels high)
+        const bubbleLayerStart = sandLayerHeight;
+        const bubbleLayerHeight = Math.max(5, Math.floor(GRID_HEIGHT * 0.05)); // At least 5 voxels
+        
+        // Create multiple bubbles with tapered ends
+        const numBubbles = Math.floor(GRID_WIDTH / 15); // Create several bubbles across the width
+        const bubbleSpacing = Math.floor(GRID_WIDTH / (numBubbles + 1));
+        
+        for (let i = 0; i < numBubbles; i++) {
+            const bubbleCenterX = bubbleSpacing * (i + 1);
+            const bubbleCenterY = bubbleLayerStart + Math.floor(bubbleLayerHeight / 2);
+            const bubbleWidth = 8 + Math.floor(Math.random() * 5); // 8-12 voxels wide
+            const bubbleHeight = Math.max(3, bubbleLayerHeight - 2); // At least 3 voxels
+            
+            // Create bubble with tapered ends (elliptical shape)
+            for (let dy = 0; dy < bubbleHeight; dy++) {
+                const y = bubbleCenterY - Math.floor(bubbleHeight / 2) + dy;
+                if (y < 0 || y >= GRID_HEIGHT) continue;
+                
+                // Calculate width at this height (tapered at top and bottom)
+                const heightRatio = Math.abs(dy - bubbleHeight / 2) / (bubbleHeight / 2);
+                const widthAtHeight = bubbleWidth * (1 - heightRatio * 0.3); // 30% taper
+                
+                for (let dx = -Math.floor(widthAtHeight / 2); dx <= Math.floor(widthAtHeight / 2); dx++) {
+                    const x = bubbleCenterX + dx;
+                    if (x >= 0 && x < GRID_WIDTH) {
+                        this.grid[y][x] = PARTICLE_TYPES.AIR;
                     }
-                    
-                    index++;
                 }
             }
         }
@@ -811,11 +826,11 @@ class Simulation {
         this.ctx.fillStyle = PARTICLE_COLORS[PARTICLE_TYPES.EMPTY];
         this.ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         
-        // Draw particles
+        // Draw non-bubble particles first
         for (let y = 0; y < GRID_HEIGHT; y++) {
             for (let x = 0; x < GRID_WIDTH; x++) {
                 const particle = this.grid[y][x];
-                if (particle !== PARTICLE_TYPES.EMPTY) {
+                if (particle !== PARTICLE_TYPES.EMPTY && particle !== PARTICLE_TYPES.AIR) {
                     this.ctx.fillStyle = PARTICLE_COLORS[particle];
                     
                     // Add slight transparency to water for realism
@@ -828,20 +843,96 @@ class Simulation {
                     // Draw particle
                     const px = x * PARTICLE_SIZE;
                     const py = y * PARTICLE_SIZE;
-                    
-                    // Make air bubbles circular
-                    if (particle === PARTICLE_TYPES.AIR) {
-                        this.ctx.beginPath();
-                        this.ctx.arc(px + PARTICLE_SIZE / 2, py + PARTICLE_SIZE / 2, PARTICLE_SIZE / 2, 0, Math.PI * 2);
-                        this.ctx.fill();
-                    } else {
-                        this.ctx.fillRect(px, py, PARTICLE_SIZE, PARTICLE_SIZE);
-                    }
+                    this.ctx.fillRect(px, py, PARTICLE_SIZE, PARTICLE_SIZE);
                 }
             }
         }
         
         this.ctx.globalAlpha = 1.0;
+        
+        // Draw bubble clusters with outlines
+        this.renderBubbleClusters();
+    }
+    
+    renderBubbleClusters() {
+        // Find all bubble clusters
+        const clusters = this.bubbleManager.findClusters(this.grid);
+        
+        // Draw each cluster with outline
+        for (const cluster of clusters) {
+            // Find the outline of the cluster
+            const outlinePoints = this.findClusterOutline(cluster);
+            
+            if (outlinePoints.length === 0) continue;
+            
+            // Fill the bubble cluster
+            this.ctx.fillStyle = PARTICLE_COLORS[PARTICLE_TYPES.AIR];
+            this.ctx.globalAlpha = 0.8;
+            
+            this.ctx.beginPath();
+            for (const cellKey of cluster.cells) {
+                const [x, y] = cellKey.split(',').map(Number);
+                const px = x * PARTICLE_SIZE;
+                const py = y * PARTICLE_SIZE;
+                this.ctx.fillRect(px, py, PARTICLE_SIZE, PARTICLE_SIZE);
+            }
+            
+            // Draw outline
+            this.ctx.strokeStyle = '#ffffff';
+            this.ctx.lineWidth = 2;
+            this.ctx.globalAlpha = 1.0;
+            
+            this.ctx.beginPath();
+            let firstPoint = true;
+            for (const point of outlinePoints) {
+                const px = point.x * PARTICLE_SIZE + PARTICLE_SIZE / 2;
+                const py = point.y * PARTICLE_SIZE + PARTICLE_SIZE / 2;
+                
+                if (firstPoint) {
+                    this.ctx.moveTo(px, py);
+                    firstPoint = false;
+                } else {
+                    this.ctx.lineTo(px, py);
+                }
+            }
+            this.ctx.closePath();
+            this.ctx.stroke();
+        }
+        
+        this.ctx.globalAlpha = 1.0;
+    }
+    
+    findClusterOutline(cluster) {
+        // Find edge cells of the cluster
+        const outlineCells = [];
+        
+        for (const cellKey of cluster.cells) {
+            const [x, y] = cellKey.split(',').map(Number);
+            
+            // Check if this cell is on the edge (has non-air neighbor)
+            const neighbors = [
+                [x-1, y], [x+1, y], [x, y-1], [x, y+1],
+                [x-1, y-1], [x+1, y-1], [x-1, y+1], [x+1, y+1]
+            ];
+            
+            let isEdge = false;
+            for (const [nx, ny] of neighbors) {
+                if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) {
+                    isEdge = true;
+                    break;
+                }
+                if (this.grid[ny][nx] !== PARTICLE_TYPES.AIR) {
+                    isEdge = true;
+                    break;
+                }
+            }
+            
+            if (isEdge) {
+                outlineCells.push({ x, y });
+            }
+        }
+        
+        return outlineCells;
     }
     
     animate() {
