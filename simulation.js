@@ -5,6 +5,24 @@ const PARTICLE_SIZE = 4;
 const GRID_WIDTH = Math.floor(CANVAS_WIDTH / PARTICLE_SIZE);
 const GRID_HEIGHT = Math.floor(CANVAS_HEIGHT / PARTICLE_SIZE);
 
+// Physics Constants
+const PHYSICS_PARAMS = {
+    SURFACE_TENSION_FACTOR: 1.5,
+    MERGE_DISTANCE: 2,
+    ANGLE_OF_REPOSE: 35,
+    SAND_FRICTION_MIN: 0.3,
+    SAND_FRICTION_MAX: 0.5,
+    SAND_MASS_MIN: 1.0,
+    SAND_MASS_MAX: 1.5,
+    GAP_SIZE: 0.8,
+    WATER_DRAG: 0.95,
+    BUBBLE_SEARCH_RADIUS: 3,
+    BUOYANCY: 0.15,
+    SPREAD_FORCE: 0.1,
+    COHESION: 0.05,
+    MAX_SLOPE_RATIO: 0.7
+};
+
 // Particle types
 const PARTICLE_TYPES = {
     EMPTY: 0,
@@ -35,6 +53,372 @@ const PARTICLE_DENSITY = {
     [PARTICLE_TYPES.AIR]: 1
 };
 
+// Particle properties storage
+class ParticleProperties {
+    constructor() {
+        this.friction = {};  // For sand particles
+        this.mass = {};      // For sand particles
+    }
+    
+    setProperties(x, y, friction, mass) {
+        const key = `${x},${y}`;
+        this.friction[key] = friction;
+        this.mass[key] = mass;
+    }
+    
+    getProperties(x, y) {
+        const key = `${x},${y}`;
+        return {
+            friction: this.friction[key] || 0.4,
+            mass: this.mass[key] || 1.2
+        };
+    }
+    
+    moveProperties(fromX, fromY, toX, toY) {
+        const fromKey = `${fromX},${fromY}`;
+        const toKey = `${toX},${toY}`;
+        this.friction[toKey] = this.friction[fromKey];
+        this.mass[toKey] = this.mass[fromKey];
+        delete this.friction[fromKey];
+        delete this.mass[fromKey];
+    }
+    
+    deleteProperties(x, y) {
+        const key = `${x},${y}`;
+        delete this.friction[key];
+        delete this.mass[key];
+    }
+}
+
+// Bubble Cluster Class
+class BubbleCluster {
+    constructor(id) {
+        this.id = id;
+        this.cells = new Set(); // Set of "x,y" strings
+        this.minX = Infinity;
+        this.maxX = -Infinity;
+        this.minY = Infinity;
+        this.maxY = -Infinity;
+    }
+    
+    addCell(x, y) {
+        this.cells.add(`${x},${y}`);
+        this.minX = Math.min(this.minX, x);
+        this.maxX = Math.max(this.maxX, x);
+        this.minY = Math.min(this.minY, y);
+        this.maxY = Math.max(this.maxY, y);
+    }
+    
+    getWidth() {
+        return this.maxX - this.minX + 1;
+    }
+    
+    getHeight() {
+        return this.maxY - this.minY + 1;
+    }
+    
+    getHeightWidthRatio() {
+        const width = this.getWidth();
+        return width > 0 ? this.getHeight() / width : 0;
+    }
+    
+    getCenterX() {
+        return (this.minX + this.maxX) / 2;
+    }
+    
+    getCenterY() {
+        return (this.minY + this.maxY) / 2;
+    }
+    
+    size() {
+        return this.cells.size;
+    }
+    
+    hasCell(x, y) {
+        return this.cells.has(`${x},${y}`);
+    }
+}
+
+// Bubble Manager Class
+class BubbleManager {
+    constructor(gridWidth, gridHeight) {
+        this.gridWidth = gridWidth;
+        this.gridHeight = gridHeight;
+        this.clusters = [];
+        this.nextClusterId = 0;
+    }
+    
+    findClusters(grid) {
+        this.clusters = [];
+        const visited = new Set();
+        
+        for (let y = 0; y < this.gridHeight; y++) {
+            for (let x = 0; x < this.gridWidth; x++) {
+                if (grid[y][x] === PARTICLE_TYPES.AIR && !visited.has(`${x},${y}`)) {
+                    const cluster = this.floodFill(grid, x, y, visited);
+                    if (cluster.size() > 0) {
+                        this.clusters.push(cluster);
+                    }
+                }
+            }
+        }
+        
+        return this.clusters;
+    }
+    
+    floodFill(grid, startX, startY, visited) {
+        const cluster = new BubbleCluster(this.nextClusterId++);
+        const stack = [[startX, startY]];
+        
+        while (stack.length > 0) {
+            const [x, y] = stack.pop();
+            const key = `${x},${y}`;
+            
+            if (visited.has(key)) continue;
+            if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) continue;
+            if (grid[y][x] !== PARTICLE_TYPES.AIR) continue;
+            
+            visited.add(key);
+            cluster.addCell(x, y);
+            
+            // Check 4-connected neighbors
+            stack.push([x + 1, y]);
+            stack.push([x - 1, y]);
+            stack.push([x, y + 1]);
+            stack.push([x, y - 1]);
+        }
+        
+        return cluster;
+    }
+    
+    shouldSplitCluster(cluster) {
+        return cluster.getHeightWidthRatio() > PHYSICS_PARAMS.SURFACE_TENSION_FACTOR;
+    }
+    
+    shouldMergeClusters(cluster1, cluster2) {
+        const dx = cluster1.getCenterX() - cluster2.getCenterX();
+        const dy = cluster1.getCenterY() - cluster2.getCenterY();
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        return distance <= PHYSICS_PARAMS.MERGE_DISTANCE;
+    }
+}
+
+// Sand Physics Class
+class SandPhysics {
+    constructor(gridWidth, gridHeight) {
+        this.gridWidth = gridWidth;
+        this.gridHeight = gridHeight;
+    }
+    
+    // Find best path for sand particle considering obstacles
+    findBestPath(grid, x, y, gravity, particleProps) {
+        const nextY = y + gravity;
+        
+        if (nextY < 0 || nextY >= this.gridHeight) return null;
+        
+        // Try straight down first
+        if (this.canMoveTo(grid, x, nextY)) {
+            return { x, y: nextY, type: 'fall' };
+        }
+        
+        // Multi-directional pathfinding - check both diagonals
+        const directions = [
+            { dx: -1, priority: Math.random() },
+            { dx: 1, priority: Math.random() }
+        ];
+        
+        // Sort by priority for randomness
+        directions.sort((a, b) => a.priority - b.priority);
+        
+        for (const dir of directions) {
+            const newX = x + dir.dx;
+            if (newX >= 0 && newX < this.gridWidth) {
+                if (this.canMoveTo(grid, newX, nextY)) {
+                    return { x: newX, y: nextY, type: 'diagonal' };
+                }
+            }
+        }
+        
+        // Search for gaps in bubble barriers
+        const gap = this.findGapInBarrier(grid, x, y, nextY);
+        if (gap) return gap;
+        
+        // Check if can slide laterally based on slope
+        const lateralMove = this.tryLateralSlide(grid, x, y, particleProps.friction);
+        if (lateralMove) return lateralMove;
+        
+        return null;
+    }
+    
+    canMoveTo(grid, x, y) {
+        if (x < 0 || x >= this.gridWidth || y < 0 || y >= this.gridHeight) return false;
+        return grid[y][x] === PARTICLE_TYPES.EMPTY;
+    }
+    
+    findGapInBarrier(grid, x, y, targetY) {
+        const searchRadius = PHYSICS_PARAMS.BUBBLE_SEARCH_RADIUS;
+        
+        for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+            if (dx === 0) continue;
+            const searchX = x + dx;
+            
+            if (searchX >= 0 && searchX < this.gridWidth) {
+                let hasGap = true;
+                
+                // Check if there's a clear vertical path
+                for (let checkY = y + 1; checkY <= targetY && checkY < this.gridHeight; checkY++) {
+                    if (grid[checkY][searchX] !== PARTICLE_TYPES.EMPTY) {
+                        hasGap = false;
+                        break;
+                    }
+                }
+                
+                if (hasGap && this.canMoveTo(grid, searchX, targetY)) {
+                    return { x: searchX, y: targetY, type: 'gap' };
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    tryLateralSlide(grid, x, y, friction) {
+        // Check slope on both sides
+        const directions = [
+            { dx: -1, priority: Math.random() },
+            { dx: 1, priority: Math.random() }
+        ];
+        
+        directions.sort((a, b) => a.priority - b.priority);
+        
+        for (const dir of directions) {
+            const newX = x + dir.dx;
+            
+            if (newX >= 0 && newX < this.gridWidth) {
+                if (this.canMoveTo(grid, newX, y)) {
+                    // Check if slope allows sliding (friction based)
+                    const slope = this.calculateLocalSlope(grid, newX, y);
+                    
+                    if (slope < PHYSICS_PARAMS.MAX_SLOPE_RATIO && Math.random() > friction) {
+                        return { x: newX, y, type: 'slide' };
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    calculateLocalSlope(grid, x, y) {
+        // Check height difference in local area
+        let leftHeight = 0;
+        let rightHeight = 0;
+        
+        // Count sand particles below on left side
+        for (let dy = 1; dy < 5 && y + dy < this.gridHeight; dy++) {
+            if (x - 1 >= 0 && this.isSand(grid[y + dy][x - 1])) {
+                leftHeight++;
+            } else break;
+        }
+        
+        // Count sand particles below on right side
+        for (let dy = 1; dy < 5 && y + dy < this.gridHeight; dy++) {
+            if (x + 1 < this.gridWidth && this.isSand(grid[y + dy][x + 1])) {
+                rightHeight++;
+            } else break;
+        }
+        
+        const heightDiff = Math.abs(leftHeight - rightHeight);
+        return heightDiff / 3.0; // Normalize
+    }
+    
+    isSand(particleType) {
+        return particleType === PARTICLE_TYPES.SAND_HEAVY ||
+               particleType === PARTICLE_TYPES.SAND_MEDIUM ||
+               particleType === PARTICLE_TYPES.SAND_LIGHT;
+    }
+    
+    applyWaterDrag(velocity) {
+        return velocity * PHYSICS_PARAMS.WATER_DRAG;
+    }
+}
+
+// Bubble Physics Class
+class BubblePhysics {
+    constructor(gridWidth, gridHeight) {
+        this.gridWidth = gridWidth;
+        this.gridHeight = gridHeight;
+    }
+    
+    applyBuoyancy(grid, x, y, gravity) {
+        // Bubbles rise with buoyancy force
+        const riseY = y - gravity;
+        
+        if (riseY >= 0 && riseY < this.gridHeight) {
+            const above = grid[riseY][x];
+            if (above !== PARTICLE_TYPES.EMPTY && PARTICLE_DENSITY[above] > PARTICLE_DENSITY[PARTICLE_TYPES.AIR]) {
+                if (Math.random() < PHYSICS_PARAMS.BUOYANCY) {
+                    return { x, y: riseY };
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    applySpreadForce(grid, cluster, x, y) {
+        // If cluster is too tall, spread horizontally
+        if (!cluster || cluster.getHeightWidthRatio() <= PHYSICS_PARAMS.SURFACE_TENSION_FACTOR) {
+            return null;
+        }
+        
+        // Spread outward from center
+        const centerX = cluster.getCenterX();
+        const direction = x < centerX ? -1 : 1;
+        const newX = x + direction;
+        
+        if (newX >= 0 && newX < this.gridWidth) {
+            const target = grid[y][newX];
+            if (target === PARTICLE_TYPES.EMPTY || PARTICLE_DENSITY[target] > PARTICLE_DENSITY[PARTICLE_TYPES.AIR]) {
+                if (Math.random() < PHYSICS_PARAMS.SPREAD_FORCE) {
+                    return { x: newX, y };
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    maintainGap(grid, x, y) {
+        // Ensure minimum spacing between bubbles
+        let tooClose = false;
+        
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) continue;
+                
+                const checkX = x + dx;
+                const checkY = y + dy;
+                
+                if (checkX >= 0 && checkX < this.gridWidth && 
+                    checkY >= 0 && checkY < this.gridHeight) {
+                    
+                    if (grid[checkY][checkX] === PARTICLE_TYPES.AIR) {
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        if (distance < PHYSICS_PARAMS.GAP_SIZE) {
+                            tooClose = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (tooClose) break;
+        }
+        
+        return tooClose;
+    }
+}
+
 class Simulation {
     constructor() {
         this.canvas = document.getElementById('simulationCanvas');
@@ -44,7 +428,13 @@ class Simulation {
         
         this.grid = [];
         this.gravity = 1; // 1 for down, -1 for up
-        this.bubbles = []; // Track air bubbles for merging
+        
+        // Initialize physics systems
+        this.particleProps = new ParticleProperties();
+        this.bubbleManager = new BubbleManager(GRID_WIDTH, GRID_HEIGHT);
+        this.sandPhysics = new SandPhysics(GRID_WIDTH, GRID_HEIGHT);
+        this.bubblePhysics = new BubblePhysics(GRID_WIDTH, GRID_HEIGHT);
+        this.clusters = [];
         
         this.initGrid();
         this.populateGrid();
@@ -107,7 +497,20 @@ class Simulation {
         for (let y = 0; y < GRID_HEIGHT; y++) {
             for (let x = 0; x < GRID_WIDTH; x++) {
                 if (index < particles.length) {
-                    this.grid[y][x] = particles[index];
+                    const particle = particles[index];
+                    this.grid[y][x] = particle;
+                    
+                    // Initialize sand particle properties
+                    if (particle === PARTICLE_TYPES.SAND_HEAVY ||
+                        particle === PARTICLE_TYPES.SAND_MEDIUM ||
+                        particle === PARTICLE_TYPES.SAND_LIGHT) {
+                        const friction = PHYSICS_PARAMS.SAND_FRICTION_MIN + 
+                                       Math.random() * (PHYSICS_PARAMS.SAND_FRICTION_MAX - PHYSICS_PARAMS.SAND_FRICTION_MIN);
+                        const mass = PHYSICS_PARAMS.SAND_MASS_MIN + 
+                                   Math.random() * (PHYSICS_PARAMS.SAND_MASS_MAX - PHYSICS_PARAMS.SAND_MASS_MIN);
+                        this.particleProps.setProperties(x, y, friction, mass);
+                    }
+                    
                     index++;
                 }
             }
@@ -135,9 +538,20 @@ class Simulation {
     }
     
     update() {
+        // Find bubble clusters
+        this.clusters = this.bubbleManager.findClusters(this.grid);
+        
         const newGrid = [];
         for (let y = 0; y < GRID_HEIGHT; y++) {
             newGrid[y] = [...this.grid[y]];
+        }
+        
+        // Create cluster map for quick lookup
+        const clusterMap = {};
+        for (const cluster of this.clusters) {
+            for (const cellKey of cluster.cells) {
+                clusterMap[cellKey] = cluster;
+            }
         }
         
         // Process particles based on gravity direction
@@ -145,23 +559,22 @@ class Simulation {
             // Normal gravity - process bottom to top
             for (let y = GRID_HEIGHT - 1; y >= 0; y--) {
                 for (let x = 0; x < GRID_WIDTH; x++) {
-                    this.updateParticle(x, y, newGrid);
+                    this.updateParticle(x, y, newGrid, clusterMap);
                 }
             }
         } else {
             // Inverted gravity - process top to bottom
             for (let y = 0; y < GRID_HEIGHT; y++) {
                 for (let x = 0; x < GRID_WIDTH; x++) {
-                    this.updateParticle(x, y, newGrid);
+                    this.updateParticle(x, y, newGrid, clusterMap);
                 }
             }
         }
         
         this.grid = newGrid;
-        this.mergeBubbles();
     }
     
-    updateParticle(x, y, newGrid) {
+    updateParticle(x, y, newGrid, clusterMap) {
         const particle = this.grid[y][x];
         
         if (particle === PARTICLE_TYPES.EMPTY) return;
@@ -175,107 +588,110 @@ class Simulation {
         const belowDensity = PARTICLE_DENSITY[below];
         const particleDensity = PARTICLE_DENSITY[particle];
         
-        // Particle should sink/rise based on density difference
-        const shouldMove = (this.gravity > 0 && particleDensity > belowDensity) ||
-                          (this.gravity < 0 && particleDensity < belowDensity);
+        // Handle SAND particles with advanced physics
+        if (particle === PARTICLE_TYPES.SAND_HEAVY ||
+            particle === PARTICLE_TYPES.SAND_MEDIUM ||
+            particle === PARTICLE_TYPES.SAND_LIGHT) {
+            
+            const props = this.particleProps.getProperties(x, y);
+            
+            // Sand cannot pass through air bubbles - they are solid barriers
+            if (below === PARTICLE_TYPES.AIR) {
+                // Try to slide laterally off the bubble
+                const lateralMove = this.sandPhysics.tryLateralSlide(this.grid, x, y, props.friction);
+                if (lateralMove) {
+                    newGrid[lateralMove.y][lateralMove.x] = particle;
+                    newGrid[y][x] = PARTICLE_TYPES.EMPTY;
+                    this.particleProps.moveProperties(x, y, lateralMove.x, lateralMove.y);
+                }
+                return;
+            }
+            
+            // Try to find best path (multi-directional pathfinding)
+            const move = this.sandPhysics.findBestPath(this.grid, x, y, this.gravity, props);
+            if (move) {
+                const target = this.grid[move.y][move.x];
+                newGrid[move.y][move.x] = particle;
+                newGrid[y][x] = target;
+                this.particleProps.moveProperties(x, y, move.x, move.y);
+                return;
+            }
+        }
         
-        if (shouldMove) {
-            // Try to move straight down/up
-            if (below === PARTICLE_TYPES.EMPTY || belowDensity < particleDensity) {
+        // Handle AIR bubbles with advanced physics
+        else if (particle === PARTICLE_TYPES.AIR) {
+            const cluster = clusterMap[`${x},${y}`];
+            
+            // Apply buoyancy - bubbles rise
+            const buoyancyMove = this.bubblePhysics.applyBuoyancy(this.grid, x, y, this.gravity);
+            if (buoyancyMove) {
+                const target = this.grid[buoyancyMove.y][buoyancyMove.x];
+                newGrid[buoyancyMove.y][buoyancyMove.x] = particle;
+                newGrid[y][x] = target;
+                return;
+            }
+            
+            // Apply spreading force if cluster is too tall
+            const spreadMove = this.bubblePhysics.applySpreadForce(this.grid, cluster, x, y);
+            if (spreadMove) {
+                const target = this.grid[spreadMove.y][spreadMove.x];
+                if (target === PARTICLE_TYPES.EMPTY || PARTICLE_DENSITY[target] > PARTICLE_DENSITY[PARTICLE_TYPES.AIR]) {
+                    newGrid[spreadMove.y][spreadMove.x] = particle;
+                    newGrid[y][x] = target;
+                    return;
+                }
+            }
+            
+            // Natural rising for bubbles
+            if (belowDensity > particleDensity && below !== PARTICLE_TYPES.AIR) {
                 newGrid[nextY][x] = particle;
                 newGrid[y][x] = below;
                 return;
             }
+        }
+        
+        // Handle WATER particles
+        else if (particle === PARTICLE_TYPES.WATER) {
+            // Particle should sink/rise based on density difference
+            const shouldMove = (this.gravity > 0 && particleDensity > belowDensity) ||
+                              (this.gravity < 0 && particleDensity < belowDensity);
             
-            // Try diagonal movement for liquids and sand
-            if (particle !== PARTICLE_TYPES.AIR || Math.random() > 0.7) {
-                const direction = Math.random() < 0.5 ? -1 : 1;
-                const diagX = x + direction;
+            if (shouldMove) {
+                // Try to move straight down/up
+                if (below === PARTICLE_TYPES.EMPTY || belowDensity < particleDensity) {
+                    newGrid[nextY][x] = particle;
+                    newGrid[y][x] = below;
+                    return;
+                }
                 
-                if (diagX >= 0 && diagX < GRID_WIDTH) {
-                    const diag = this.grid[nextY][diagX];
-                    const diagDensity = PARTICLE_DENSITY[diag];
+                // Try diagonal movement
+                if (Math.random() > 0.7) {
+                    const direction = Math.random() < 0.5 ? -1 : 1;
+                    const diagX = x + direction;
                     
-                    if (diag === PARTICLE_TYPES.EMPTY || diagDensity < particleDensity) {
-                        newGrid[nextY][diagX] = particle;
-                        newGrid[y][x] = PARTICLE_TYPES.EMPTY;
-                        return;
+                    if (diagX >= 0 && diagX < GRID_WIDTH) {
+                        const diag = this.grid[nextY][diagX];
+                        const diagDensity = PARTICLE_DENSITY[diag];
+                        
+                        if (diag === PARTICLE_TYPES.EMPTY || diagDensity < particleDensity) {
+                            newGrid[nextY][diagX] = particle;
+                            newGrid[y][x] = PARTICLE_TYPES.EMPTY;
+                            return;
+                        }
                     }
                 }
             }
-        }
-        
-        // Water spreads horizontally
-        if (particle === PARTICLE_TYPES.WATER && Math.random() > 0.5) {
-            const direction = Math.random() < 0.5 ? -1 : 1;
-            const sideX = x + direction;
             
-            if (sideX >= 0 && sideX < GRID_WIDTH) {
-                const side = this.grid[y][sideX];
-                if (side === PARTICLE_TYPES.EMPTY) {
-                    newGrid[y][sideX] = particle;
-                    newGrid[y][x] = PARTICLE_TYPES.EMPTY;
-                }
-            }
-        }
-        
-        // Air bubbles rise and move randomly
-        if (particle === PARTICLE_TYPES.AIR) {
-            // Try to rise/sink based on gravity
-            if (belowDensity > particleDensity) {
-                newGrid[nextY][x] = particle;
-                newGrid[y][x] = below;
-                return;
-            }
-            
-            // Random horizontal movement for bubbles
-            if (Math.random() > 0.6) {
+            // Water spreads horizontally
+            if (Math.random() > 0.5) {
                 const direction = Math.random() < 0.5 ? -1 : 1;
                 const sideX = x + direction;
                 
                 if (sideX >= 0 && sideX < GRID_WIDTH) {
                     const side = this.grid[y][sideX];
-                    if (side === PARTICLE_TYPES.EMPTY || PARTICLE_DENSITY[side] > particleDensity) {
+                    if (side === PARTICLE_TYPES.EMPTY) {
                         newGrid[y][sideX] = particle;
-                        newGrid[y][x] = side;
-                    }
-                }
-            }
-        }
-    }
-    
-    mergeBubbles() {
-        // Detect and merge adjacent air bubbles
-        for (let y = 0; y < GRID_HEIGHT - 1; y++) {
-            for (let x = 0; x < GRID_WIDTH - 1; x++) {
-                if (this.grid[y][x] === PARTICLE_TYPES.AIR) {
-                    // Check if adjacent cells also have air
-                    const right = this.grid[y][x + 1];
-                    const down = this.grid[y + 1][x];
-                    
-                    // Surface tension - bubbles attract each other with some probability
-                    if (right !== PARTICLE_TYPES.AIR && right !== PARTICLE_TYPES.EMPTY && Math.random() > 0.95) {
-                        // Look for nearby air to merge
-                        for (let dy = -1; dy <= 1; dy++) {
-                            for (let dx = -1; dx <= 1; dx++) {
-                                const ny = y + dy;
-                                const nx = x + dx;
-                                if (ny >= 0 && ny < GRID_HEIGHT && nx >= 0 && nx < GRID_WIDTH) {
-                                    if (this.grid[ny][nx] === PARTICLE_TYPES.AIR && (dx !== 0 || dy !== 0)) {
-                                        // Pull bubbles together
-                                        if (Math.random() > 0.5) {
-                                            const tempY = Math.floor((y + ny) / 2);
-                                            const tempX = Math.floor((x + nx) / 2);
-                                            if (this.grid[tempY][tempX] !== PARTICLE_TYPES.AIR) {
-                                                const temp = this.grid[tempY][tempX];
-                                                this.grid[tempY][tempX] = PARTICLE_TYPES.AIR;
-                                                this.grid[y][x] = temp;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        newGrid[y][x] = PARTICLE_TYPES.EMPTY;
                     }
                 }
             }
