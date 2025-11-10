@@ -860,16 +860,13 @@ class Simulation {
         
         // Draw each cluster with outline
         for (const cluster of clusters) {
-            // Find the outline of the cluster
-            const outlinePoints = this.findClusterOutline(cluster);
+            // Skip very small clusters (single cells)
+            if (cluster.size() < 2) continue;
             
-            if (outlinePoints.length === 0) continue;
-            
-            // Fill the bubble cluster
+            // Fill the bubble cluster interior
             this.ctx.fillStyle = PARTICLE_COLORS[PARTICLE_TYPES.AIR];
-            this.ctx.globalAlpha = 0.8;
+            this.ctx.globalAlpha = 0.75;
             
-            this.ctx.beginPath();
             for (const cellKey of cluster.cells) {
                 const [x, y] = cellKey.split(',').map(Number);
                 const px = x * PARTICLE_SIZE;
@@ -877,62 +874,50 @@ class Simulation {
                 this.ctx.fillRect(px, py, PARTICLE_SIZE, PARTICLE_SIZE);
             }
             
-            // Draw outline
-            this.ctx.strokeStyle = '#ffffff';
-            this.ctx.lineWidth = 2;
+            // Draw outline around cluster
             this.ctx.globalAlpha = 1.0;
+            this.ctx.strokeStyle = '#ffffff';
+            this.ctx.lineWidth = 1.5;
             
-            this.ctx.beginPath();
-            let firstPoint = true;
-            for (const point of outlinePoints) {
-                const px = point.x * PARTICLE_SIZE + PARTICLE_SIZE / 2;
-                const py = point.y * PARTICLE_SIZE + PARTICLE_SIZE / 2;
+            // Draw edges of the cluster
+            for (const cellKey of cluster.cells) {
+                const [x, y] = cellKey.split(',').map(Number);
+                const px = x * PARTICLE_SIZE;
+                const py = y * PARTICLE_SIZE;
                 
-                if (firstPoint) {
+                // Check each side and draw border if adjacent to non-bubble
+                // Top
+                if (y === 0 || this.grid[y - 1][x] !== PARTICLE_TYPES.AIR) {
+                    this.ctx.beginPath();
                     this.ctx.moveTo(px, py);
-                    firstPoint = false;
-                } else {
-                    this.ctx.lineTo(px, py);
+                    this.ctx.lineTo(px + PARTICLE_SIZE, py);
+                    this.ctx.stroke();
+                }
+                // Bottom
+                if (y === GRID_HEIGHT - 1 || this.grid[y + 1][x] !== PARTICLE_TYPES.AIR) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(px, py + PARTICLE_SIZE);
+                    this.ctx.lineTo(px + PARTICLE_SIZE, py + PARTICLE_SIZE);
+                    this.ctx.stroke();
+                }
+                // Left
+                if (x === 0 || this.grid[y][x - 1] !== PARTICLE_TYPES.AIR) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(px, py);
+                    this.ctx.lineTo(px, py + PARTICLE_SIZE);
+                    this.ctx.stroke();
+                }
+                // Right
+                if (x === GRID_WIDTH - 1 || this.grid[y][x + 1] !== PARTICLE_TYPES.AIR) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(px + PARTICLE_SIZE, py);
+                    this.ctx.lineTo(px + PARTICLE_SIZE, py + PARTICLE_SIZE);
+                    this.ctx.stroke();
                 }
             }
-            this.ctx.closePath();
-            this.ctx.stroke();
         }
         
         this.ctx.globalAlpha = 1.0;
-    }
-    
-    findClusterOutline(cluster) {
-        // Find edge cells of the cluster
-        const outlineCells = [];
-        
-        for (const cellKey of cluster.cells) {
-            const [x, y] = cellKey.split(',').map(Number);
-            
-            // Check if this cell is on the edge (has non-air neighbor)
-            const neighbors = [
-                [x-1, y], [x+1, y], [x, y-1], [x, y+1],
-                [x-1, y-1], [x+1, y-1], [x-1, y+1], [x+1, y+1]
-            ];
-            
-            let isEdge = false;
-            for (const [nx, ny] of neighbors) {
-                if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) {
-                    isEdge = true;
-                    break;
-                }
-                if (this.grid[ny][nx] !== PARTICLE_TYPES.AIR) {
-                    isEdge = true;
-                    break;
-                }
-            }
-            
-            if (isEdge) {
-                outlineCells.push({ x, y });
-            }
-        }
-        
-        return outlineCells;
     }
     
     animate() {
