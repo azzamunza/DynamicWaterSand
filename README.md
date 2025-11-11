@@ -31,8 +31,16 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
 - 15,000 particles (150x100 grid)
 - Grid-optimized physics engine
 
+## Simulations
+
+- **Sand Art Simulation**: [index.html](https://azzamunza.github.io/DynamicWaterSand/) - Main liquid sand art simulation
+- **Bubble Physics**: [bubbles.html](https://azzamunza.github.io/DynamicWaterSand/bubbles.html) - Interactive air bubble physics simulation
+
 ## Files
 
 - `index.html` - Main HTML structure
 - `styles.css` - Styling for frame and UI
 - `simulation.js` - Particle physics and rendering
+- `bubbles.html` - Bubble simulation page
+- `bubbles.js` - Transpiled bubble simulator component
+- `bubble_simulator.tsx` - React/TypeScript source for bubble simulation
