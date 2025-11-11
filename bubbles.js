@@ -15,8 +15,10 @@
 const BubbleSimulator = () => {
   const canvasRef = useRef(null);
   const [isRunning, setIsRunning] = useState(true);
-  const [airAmount, setAirAmount] = useState(20);
   const [surfaceTension, setSurfaceTension] = useState(50);
+  const [voxelSize, setVoxelSize] = useState(8);
+  const [waterDensity, setWaterDensity] = useState(100);
+  const [airDensity, setAirDensity] = useState(10);
   const animationRef = useRef(null);
   const mouseRef = useRef({
     x: 0,
@@ -24,6 +26,7 @@ const BubbleSimulator = () => {
     isDown: false
   });
   const blobsRef = useRef([]);
+  const waterVoxelsRef = useRef([]);
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -60,32 +63,38 @@ const BubbleSimulator = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     let frameCount = 0;
+    let lastTime = performance.now();
     const METABALL_THRESHOLD = 1.0;
-    const GRID_SIZE = 8;
+    const GRID_SIZE = voxelSize;
     const SURFACE_LAYER = 80; // Height of the surface accumulation zone
 
     class Blob {
       constructor(x, y, radius = null) {
         this.x = x;
         this.y = y;
-        this.radius = radius || Math.random() * 15 + 10;
-        this.vx = (Math.random() - 0.5) * 0.3;
-        this.vy = -(Math.random() * 0.2 + 0.15);
+        this.radius = radius || GRID_SIZE;
+        this.vx = (Math.random() - 0.5) * 0.1;
+        this.vy = -(Math.random() * 0.05 + 0.05);
         this.mass = this.radius * this.radius;
         this.mergeTimer = 0;
         this.atSurface = false;
+        this.density = airDensity;
       }
-      update(canvas) {
+      update(canvas, deltaTime) {
         // Check if at surface
         const distFromTop = this.y - this.radius;
         this.atSurface = distFromTop < SURFACE_LAYER;
+
+        // Buoyancy based on density difference
+        const densityDiff = waterDensity - this.density;
+        const buoyancy = 0.0003 * densityDiff * deltaTime;
         if (this.atSurface) {
-          // At surface: spread horizontally and slow down
+          // At surface: spread horizontally based on surface tension
           this.vy *= 0.85; // Strong damping
 
-          // Apply horizontal spreading force
-          const spreadForce = 0.3;
-          this.vx += (Math.random() - 0.5) * spreadForce;
+          // Lower surface tension = more spreading
+          const spreadForce = (1.0 - surfaceTension / 100) * 0.5;
+          this.vx += (Math.random() - 0.5) * spreadForce * deltaTime / 16;
 
           // Cap upward movement at surface
           if (this.y < this.radius + 5) {
@@ -96,28 +105,28 @@ const BubbleSimulator = () => {
           // Stronger horizontal drift along surface
           this.vx *= 0.96;
         } else {
-          // Rising through water: normal buoyancy
-          const buoyancy = 0.04 * (this.radius / 15);
+          // Rising through water: buoyancy
           this.vy -= buoyancy;
           this.vx *= 0.99;
           this.vy *= 0.99;
 
           // Gentle wobble
-          this.vx += Math.sin(frameCount * 0.05 + this.x * 0.01) * 0.02;
+          this.vx += Math.sin(frameCount * 0.05 + this.x * 0.01) * 0.02 * deltaTime / 16;
         }
 
-        // Update position
-        this.x += this.vx;
-        this.y += this.vy;
+        // Update position with deltaTime
+        this.x += this.vx * deltaTime / 16;
+        this.y += this.vy * deltaTime / 16;
 
-        // Boundary collisions
+        // Boundary collisions - treat walls like glass (surface tension effect)
+        const wallTension = surfaceTension / 100;
         if (this.x - this.radius < 0) {
           this.x = this.radius;
-          this.vx = Math.abs(this.vx) * 0.5;
+          this.vx = Math.abs(this.vx) * (0.3 + wallTension * 0.3);
         }
         if (this.x + this.radius > canvas.width) {
           this.x = canvas.width - this.radius;
-          this.vx = -Math.abs(this.vx) * 0.5;
+          this.vx = -Math.abs(this.vx) * (0.3 + wallTension * 0.3);
         }
         if (this.y - this.radius < 0) {
           this.y = this.radius;
@@ -151,7 +160,45 @@ const BubbleSimulator = () => {
         return this.mergeTimer <= 0 && this.radius < 80;
       }
       canSplit() {
-        return this.radius > 25 && Math.random() < 0.001;
+        return this.radius > GRID_SIZE * 3 && Math.random() < 0.0005;
+      }
+    }
+    class WaterVoxel {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.density = waterDensity;
+      }
+      update(canvas, deltaTime) {
+        // Gravity for water
+        const gravity = 0.0005 * deltaTime;
+        this.vy += gravity;
+        this.vx *= 0.98;
+        this.vy *= 0.98;
+
+        // Update position
+        this.x += this.vx * deltaTime / 16;
+        this.y += this.vy * deltaTime / 16;
+
+        // Boundary collisions
+        if (this.x < GRID_SIZE / 2) {
+          this.x = GRID_SIZE / 2;
+          this.vx = Math.abs(this.vx) * 0.3;
+        }
+        if (this.x > canvas.width - GRID_SIZE / 2) {
+          this.x = canvas.width - GRID_SIZE / 2;
+          this.vx = -Math.abs(this.vx) * 0.3;
+        }
+        if (this.y < GRID_SIZE / 2) {
+          this.y = GRID_SIZE / 2;
+          this.vy = 0;
+        }
+        if (this.y > canvas.height - GRID_SIZE / 2) {
+          this.y = canvas.height - GRID_SIZE / 2;
+          this.vy = 0;
+        }
       }
     }
     function getDistance(b1, b2) {
@@ -227,6 +274,36 @@ const BubbleSimulator = () => {
     function drawMetaballs(ctx, blobs) {
       const imageData = ctx.createImageData(canvas.width, canvas.height);
       const data = imageData.data;
+
+      // Fill with black background first
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = 0; // R
+        data[i + 1] = 0; // G
+        data[i + 2] = 0; // B
+        data[i + 3] = 255; // A (fully opaque)
+      }
+
+      // Draw water voxels
+      for (const waterVoxel of waterVoxelsRef.current) {
+        const gridX = Math.floor(waterVoxel.x / GRID_SIZE) * GRID_SIZE;
+        const gridY = Math.floor(waterVoxel.y / GRID_SIZE) * GRID_SIZE;
+        for (let dy = 0; dy < GRID_SIZE; dy++) {
+          for (let dx = 0; dx < GRID_SIZE; dx++) {
+            const px = gridX + dx;
+            const py = gridY + dy;
+            if (px < canvas.width && py < canvas.height && px >= 0 && py >= 0) {
+              const index = (py * canvas.width + px) * 4;
+              // Dark blue water color
+              data[index] = 20; // R
+              data[index + 1] = 80; // G
+              data[index + 2] = 150; // B
+              data[index + 3] = 255; // A (fully opaque)
+            }
+          }
+        }
+      }
+
+      // Draw air bubbles
       for (let y = 0; y < canvas.height; y += GRID_SIZE) {
         for (let x = 0; x < canvas.width; x += GRID_SIZE) {
           let sum = 0;
@@ -245,11 +322,11 @@ const BubbleSimulator = () => {
                   // Calculate color intensity based on sum
                   const intensity = Math.min(1, sum / 2);
 
-                  // Cyan/blue bubble color
-                  data[index] = 150 + intensity * 80; // R
-                  data[index + 1] = 220 + intensity * 35; // G
+                  // Light cyan/white bubble color with transparency
+                  data[index] = 180 + intensity * 75; // R
+                  data[index + 1] = 230 + intensity * 25; // G
                   data[index + 2] = 255; // B
-                  data[index + 3] = 180 + intensity * 75; // A
+                  data[index + 3] = 220 + intensity * 35; // A
                 }
               }
             }
@@ -258,11 +335,20 @@ const BubbleSimulator = () => {
       }
       ctx.putImageData(imageData, 0, 0);
 
-      // Add highlights and glossiness
+      // Add surface tension shell outline
+      const shellThickness = 1 + surfaceTension / 50;
       blobs.forEach(blob => {
+        // Draw surface tension shell
+        ctx.strokeStyle = `rgba(150, 200, 255, ${0.3 + surfaceTension / 200})`;
+        ctx.lineWidth = shellThickness;
+        ctx.beginPath();
+        ctx.arc(blob.x, blob.y, blob.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Add highlights and glossiness
         const gradient = ctx.createRadialGradient(blob.x - blob.radius * 0.3, blob.y - blob.radius * 0.3, 0, blob.x, blob.y, blob.radius);
-        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
-        gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0.5)');
+        gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.2)');
         gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
         ctx.fillStyle = gradient;
         ctx.beginPath();
@@ -270,49 +356,43 @@ const BubbleSimulator = () => {
         ctx.fill();
       });
     }
-    const animate = () => {
+    const animate = currentTime => {
+      // Calculate delta time for frame-rate independence
+      const deltaTime = Math.min(currentTime - lastTime, 32); // Cap at ~30 FPS
+      lastTime = currentTime;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Background
-      const bgGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      bgGradient.addColorStop(0, '#001a33');
-      bgGradient.addColorStop(0.5, '#003d5c');
-      bgGradient.addColorStop(1, '#005577');
-      ctx.fillStyle = bgGradient;
+      // Black background
+      ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Light rays
-      ctx.save();
-      ctx.globalAlpha = 0.1;
-      for (let i = 0; i < 5; i++) {
-        const x = canvas.width / 6 * (i + 1) + Math.sin(frameCount * 0.01 + i) * 50;
-        const rayGradient = ctx.createLinearGradient(x - 50, 0, x + 50, canvas.height);
-        rayGradient.addColorStop(0, 'rgba(255, 255, 200, 0.3)');
-        rayGradient.addColorStop(1, 'rgba(255, 255, 200, 0)');
-        ctx.fillStyle = rayGradient;
-        ctx.fillRect(x - 50, 0, 100, canvas.height);
-      }
-      ctx.restore();
+      // Initialize blobs and water voxels on first frame
+      if (frameCount === 0) {
+        // Clear existing
+        blobsRef.current = [];
+        waterVoxelsRef.current = [];
 
-      // Draw surface line
-      ctx.strokeStyle = 'rgba(100, 200, 255, 0.2)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([10, 5]);
-      ctx.beginPath();
-      ctx.moveTo(0, SURFACE_LAYER);
-      ctx.lineTo(canvas.width, SURFACE_LAYER);
-      ctx.stroke();
-      ctx.setLineDash([]);
+        // Spawn initial air bubble - one long horizontal bubble at bottom (2 voxels high)
+        const startY = canvas.height - GRID_SIZE * 3;
+        for (let x = GRID_SIZE; x < canvas.width - GRID_SIZE; x += GRID_SIZE) {
+          for (let row = 0; row < 2; row++) {
+            const y = startY + row * GRID_SIZE;
+            blobsRef.current.push(new Blob(x, y, GRID_SIZE));
+          }
+        }
 
-      // Spawn blobs
-      if (mouseRef.current.isDown && frameCount % 100 === 0) {
-        blobsRef.current.push(new Blob(mouseRef.current.x, mouseRef.current.y, 15));
-      }
-      const spawnChance = airAmount / 1000; // Convert slider value to probability
-      const maxBlobs = Math.floor(airAmount * 2.5); // Scale max blobs with air amount
-
-      if (Math.random() < spawnChance && blobsRef.current.length < maxBlobs) {
-        blobsRef.current.push(new Blob(Math.random() * canvas.width, canvas.height - 30, Math.random() * 15 + 15));
+        // Initialize water voxels - fill most of the canvas with water
+        const waterHeightRatio = 0.7; // 70% filled with water
+        const waterHeight = canvas.height * waterHeightRatio;
+        for (let y = GRID_SIZE; y < waterHeight; y += GRID_SIZE) {
+          for (let x = GRID_SIZE; x < canvas.width - GRID_SIZE; x += GRID_SIZE) {
+            // Skip where air bubbles are
+            const isAirRegion = y >= startY - GRID_SIZE && y <= startY + GRID_SIZE * 3;
+            if (!isAirRegion) {
+              waterVoxelsRef.current.push(new WaterVoxel(x, y));
+            }
+          }
+        }
       }
 
       // Apply attraction
@@ -322,13 +402,19 @@ const BubbleSimulator = () => {
       applySurfaceSpread(blobsRef.current);
 
       // Update blobs
-      blobsRef.current.forEach(b => b.update(canvas));
+      blobsRef.current.forEach(b => b.update(canvas, deltaTime));
 
-      // Calculate merge difficulty based on surface tension (0-100 -> 0.1-0.9)
-      const mergeDifficulty = 0.1 + surfaceTension / 100 * 0.8;
-      const splitDifficulty = 1.0 - surfaceTension / 100 * 0.8;
+      // Update water voxels
+      waterVoxelsRef.current.forEach(w => w.update(canvas, deltaTime));
 
-      // Handle merging (harder with high surface tension)
+      // Calculate merge difficulty based on surface tension
+      // Low surface tension = easy merge/split (fluid-like)
+      // High surface tension = hard merge/split (spherical/stable)
+      const tensionFactor = surfaceTension / 100;
+      const mergeDifficulty = 0.2 + tensionFactor * 0.6;
+      const splitEasiness = 0.8 - tensionFactor * 0.6;
+
+      // Handle merging (easier with low surface tension)
       const toRemove = new Set();
       const toAdd = [];
       for (let i = 0; i < blobsRef.current.length; i++) {
@@ -337,11 +423,11 @@ const BubbleSimulator = () => {
           const b2 = blobsRef.current[j];
           if (toRemove.has(i) || toRemove.has(j)) continue;
           const dist = getDistance(b1, b2);
-          const mergeDist = (b1.radius + b2.radius) * (0.5 + mergeDifficulty * 0.5);
+          const mergeDist = (b1.radius + b2.radius) * (0.6 + mergeDifficulty * 0.8);
 
-          // Merge chance affected by surface tension
-          const baseMergeChance = b1.atSurface && b2.atSurface ? 0.5 : 0.3;
-          const mergeChance = baseMergeChance * (1 - mergeDifficulty);
+          // Low surface tension = easier merge
+          const baseMergeChance = b1.atSurface && b2.atSurface ? 0.4 : 0.2;
+          const mergeChance = baseMergeChance * (1.2 - mergeDifficulty);
           if (dist < mergeDist && b1.canMerge() && b2.canMerge()) {
             if (Math.random() < mergeChance) {
               toAdd.push(mergeBlobs(b1, b2));
@@ -352,10 +438,10 @@ const BubbleSimulator = () => {
         }
       }
 
-      // Handle splitting (harder with high surface tension)
+      // Handle splitting (easier with low surface tension)
       blobsRef.current.forEach((blob, i) => {
         if (!toRemove.has(i) && blob.canSplit()) {
-          if (Math.random() < splitDifficulty) {
+          if (Math.random() < splitEasiness * 0.002) {
             const newBlobs = splitBlob(blob);
             toAdd.push(...newBlobs);
             toRemove.add(i);
@@ -377,37 +463,27 @@ const BubbleSimulator = () => {
       }
     };
     if (isRunning) {
-      animate();
+      lastTime = performance.now();
+      animationRef.current = requestAnimationFrame(animate);
     }
     return () => {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [isRunning]);
+  }, [isRunning, voxelSize, surfaceTension, waterDensity, airDensity]);
   return /*#__PURE__*/React.createElement("div", {
-    className: "relative w-full h-screen overflow-hidden bg-blue-900"
+    className: "relative w-full h-screen overflow-hidden bg-black"
   }, /*#__PURE__*/React.createElement("canvas", {
     ref: canvasRef,
-    className: "absolute inset-0 cursor-crosshair"
+    className: "absolute inset-0"
   }), /*#__PURE__*/React.createElement("div", {
-    className: "absolute top-4 left-4 bg-black/50 text-white p-4 rounded-lg backdrop-blur-sm"
+    className: "absolute top-4 left-4 bg-black/70 text-white p-4 rounded-lg backdrop-blur-sm border border-gray-600"
   }, /*#__PURE__*/React.createElement("h1", {
     className: "text-2xl font-bold mb-3"
-  }, "Air Bubble Physics"), /*#__PURE__*/React.createElement("p", {
-    className: "text-sm mb-3"
-  }, "Click and hold to spawn bubbles"), /*#__PURE__*/React.createElement("div", {
-    className: "mb-3"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "text-sm block mb-2"
-  }, "Air Amount: ", airAmount, "%"), /*#__PURE__*/React.createElement("input", {
-    type: "range",
-    min: "0",
-    max: "100",
-    value: airAmount,
-    onChange: e => setAirAmount(Number(e.target.value)),
-    className: "w-full"
-  })), /*#__PURE__*/React.createElement("div", {
+  }, "Voxel Bubble Physics"), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mb-3 opacity-75"
+  }, "Watch air rise through water like an inverted jar"), /*#__PURE__*/React.createElement("div", {
     className: "mb-3"
   }, /*#__PURE__*/React.createElement("label", {
     className: "text-sm block mb-2"
@@ -420,7 +496,43 @@ const BubbleSimulator = () => {
     className: "w-full"
   }), /*#__PURE__*/React.createElement("p", {
     className: "text-xs mt-1 opacity-75"
-  }, "High = stable bubbles, Low = easy merge/split")), /*#__PURE__*/React.createElement("button", {
+  }, "High = spherical bubbles, Low = fluid spreading")), /*#__PURE__*/React.createElement("div", {
+    className: "mb-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "text-sm block mb-2"
+  }, "Voxel Size: ", voxelSize, "px"), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: "4",
+    max: "16",
+    step: "2",
+    value: voxelSize,
+    onChange: e => setVoxelSize(Number(e.target.value)),
+    className: "w-full"
+  }), /*#__PURE__*/React.createElement("p", {
+    className: "text-xs mt-1 opacity-75"
+  }, "Smaller = more detail, slower performance")), /*#__PURE__*/React.createElement("div", {
+    className: "mb-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "text-sm block mb-2"
+  }, "Water Density: ", waterDensity), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: "50",
+    max: "200",
+    value: waterDensity,
+    onChange: e => setWaterDensity(Number(e.target.value)),
+    className: "w-full"
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "mb-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "text-sm block mb-2"
+  }, "Air Density: ", airDensity), /*#__PURE__*/React.createElement("input", {
+    type: "range",
+    min: "1",
+    max: "50",
+    value: airDensity,
+    onChange: e => setAirDensity(Number(e.target.value)),
+    className: "w-full"
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setIsRunning(!isRunning),
     className: "px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded transition-colors w-full"
   }, isRunning ? 'Pause' : 'Resume')));
