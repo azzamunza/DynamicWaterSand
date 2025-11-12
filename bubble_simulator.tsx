@@ -72,6 +72,7 @@ const BubbleSimulator = () => {
   const animationRef = useRef(null);
   const gridRef = useRef([]);
   const velocityRef = useRef([]);
+  const forcesRef = useRef<Array<Array<{fx: number, fy: number}>>>([]); // Track forces for each voxel
   const voxelLogRef = useRef<Array<{frame: number, airCount: number, waterCount: number, airPercent: number}>>([]);
 
   // Initialize grid and canvas
@@ -88,47 +89,72 @@ const BubbleSimulator = () => {
     const velocity = [];
     
     // First, fill everything with water
+    const forces = [];
     for (let y = 0; y < gridHeight; y++) {
       grid[y] = [];
       velocity[y] = [];
+      forces[y] = [];
       for (let x = 0; x < gridWidth; x++) {
         grid[y][x] = VOXEL_WATER;
         velocity[y][x] = { vx: 0, vy: 0 };
+        forces[y][x] = { fx: 0, fy: 0 };
       }
     }
     
     // Calculate total voxels and desired air voxels based on air percentage
     const totalVoxels = gridWidth * gridHeight;
-    const targetAirVoxels = Math.round(totalVoxels * (airPercentage / 100));
+    const targetAirVoxels = Math.max(3, Math.round(totalVoxels * (airPercentage / 100))); // Minimum 3 voxels
     
-    // Spawn air bubbles at the bottom in a single initialization
-    // Use bottom rows for air placement to simulate bubbles at source
+    // Create a single connected bubble at the bottom center
+    // Start from center bottom and grow outward to ensure connectivity
     let airVoxelsPlaced = 0;
-    const bottomRows = Math.min(5, gridHeight); // Use bottom 5 rows max
     
-    // Create a list of all available positions in bottom rows
-    const availablePositions: Array<{x: number, y: number}> = [];
-    for (let y = gridHeight - bottomRows; y < gridHeight; y++) {
-      for (let x = 0; x < gridWidth; x++) {
-        availablePositions.push({x, y});
-      }
-    }
+    // Start position: center of bottom row
+    const startX = Math.floor(gridWidth / 2);
+    const startY = gridHeight - 1;
     
-    // Shuffle the positions for random distribution
-    for (let i = availablePositions.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [availablePositions[i], availablePositions[j]] = [availablePositions[j], availablePositions[i]];
-    }
+    // Use BFS to grow a connected bubble
+    const toPlace: Array<{x: number, y: number}> = [{x: startX, y: startY}];
+    const placed = new Set<string>();
+    placed.add(`${startX},${startY}`);
     
-    // Place exact number of air voxels
-    for (let i = 0; i < Math.min(targetAirVoxels, availablePositions.length); i++) {
-      const pos = availablePositions[i];
+    while (airVoxelsPlaced < targetAirVoxels && toPlace.length > 0) {
+      // Place current voxel
+      const pos = toPlace.shift()!;
       grid[pos.y][pos.x] = VOXEL_AIR;
       airVoxelsPlaced++;
+      
+      // If we need more voxels, add adjacent positions to queue
+      if (airVoxelsPlaced < targetAirVoxels) {
+        // Check 4-connected neighbors in random order
+        const neighbors = [
+          {x: pos.x - 1, y: pos.y},
+          {x: pos.x + 1, y: pos.y},
+          {x: pos.x, y: pos.y - 1},
+          {x: pos.x, y: pos.y + 1}
+        ];
+        
+        // Shuffle neighbors for random growth pattern
+        for (let i = neighbors.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [neighbors[i], neighbors[j]] = [neighbors[j], neighbors[i]];
+        }
+        
+        for (const neighbor of neighbors) {
+          const key = `${neighbor.x},${neighbor.y}`;
+          if (neighbor.x >= 0 && neighbor.x < gridWidth && 
+              neighbor.y >= 0 && neighbor.y < gridHeight && 
+              !placed.has(key)) {
+            placed.add(key);
+            toPlace.push(neighbor);
+          }
+        }
+      }
     }
     
     gridRef.current = grid;
     velocityRef.current = velocity;
+    forcesRef.current = forces;
     voxelLogRef.current = []; // Clear log on reset
     
     console.log(`Initialized grid: ${totalVoxels} total voxels, ${airVoxelsPlaced} air voxels (${(airVoxelsPlaced/totalVoxels*100).toFixed(2)}%)`);
@@ -214,8 +240,10 @@ const BubbleSimulator = () => {
     const updatePhysics = (frameCount: number) => {
       const grid = gridRef.current;
       const velocity = velocityRef.current;
+      const forces = forcesRef.current;
       const newGrid = grid.map(row => [...row]);
       const newVelocity = velocity.map(row => row.map(v => ({...v})));
+      const newForces = forces.map(row => row.map(f => ({...f})));
       const processed = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
 
       // CLOSED SYSTEM: No air spawning during simulation
@@ -394,6 +422,10 @@ const BubbleSimulator = () => {
           const totalForceX = pressureForceX + viscosityForceX + surfaceTensionForceX + cohesionForceX;
           const totalForceY = pressureForceY + viscosityForceY + surfaceTensionForceY + cohesionForceY + gravityForce;
           
+          // Store forces for visualization (especially for water voxels)
+          newForces[y][x].fx = totalForceX;
+          newForces[y][x].fy = totalForceY;
+          
           // Scale forces for stability
           const forceScale = 0.01;
           newVelocity[y][x].vx += totalForceX * forceScale;
@@ -442,40 +474,74 @@ const BubbleSimulator = () => {
             const upwardVelocity = -velocity[y][x].vy; // Negative vy is upward
             let riseProb = 0.6 + Math.max(0, upwardVelocity) * 0.4;
             
-            // CONNECTIVITY CHECK: At high surface tension, resist breaking bubble apart
+            // CONNECTIVITY CHECK: Prevent air voxels from becoming unbound
             // Count connected air neighbors before and after potential move
-            if (surfaceTension > 0.3) {
-              let connectedNeighborsBefore = 0;
-              let connectedNeighborsAfter = 0;
-              
-              // Check 4-connected neighbors at current position
-              const currentNeighbors = [
-                {x: x - 1, y: y}, {x: x + 1, y: y},
-                {x: x, y: y - 1}, {x: x, y: y + 1}
-              ];
+            let connectedNeighborsBefore = 0;
+            let connectedNeighborsAfter = 0;
+            
+            // Check 4-connected neighbors at current position
+            const currentNeighbors = [
+              {x: x - 1, y: y}, {x: x + 1, y: y},
+              {x: x, y: y - 1}, {x: x, y: y + 1}
+            ];
+            for (const n of currentNeighbors) {
+              if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                connectedNeighborsBefore++;
+              }
+            }
+            
+            // Check 4-connected neighbors at new position
+            const newNeighbors = [
+              {x: x - 1, y: y - 1}, {x: x + 1, y: y - 1},
+              {x: x, y: y - 2}, {x: x, y: y} // y stays as water
+            ];
+            for (const n of newNeighbors) {
+              if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                connectedNeighborsAfter++;
+              }
+            }
+            
+            // CRITICAL: Prevent moves that would leave voxel unbound (0 connections)
+            // or would leave neighbors isolated
+            if (connectedNeighborsAfter === 0) {
+              // Would become unbound - reject this move completely
+              riseProb = 0;
+            } else if (connectedNeighborsBefore === 1) {
+              // This voxel is a critical connection point - check if moving would isolate neighbors
+              // Find the single neighbor
+              let criticalNeighbor = null;
               for (const n of currentNeighbors) {
                 if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
-                  connectedNeighborsBefore++;
+                  criticalNeighbor = n;
+                  break;
                 }
               }
               
-              // Check 4-connected neighbors at new position
-              const newNeighbors = [
-                {x: x - 1, y: y - 1}, {x: x + 1, y: y - 1},
-                {x: x, y: y - 2}, {x: x, y: y} // y stays as water
-              ];
-              for (const n of newNeighbors) {
-                if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
-                  connectedNeighborsAfter++;
+              // Check if that neighbor would have other connections
+              if (criticalNeighbor) {
+                let neighborConnections = 0;
+                const neighborNeighbors = [
+                  {x: criticalNeighbor.x - 1, y: criticalNeighbor.y},
+                  {x: criticalNeighbor.x + 1, y: criticalNeighbor.y},
+                  {x: criticalNeighbor.x, y: criticalNeighbor.y - 1},
+                  {x: criticalNeighbor.x, y: criticalNeighbor.y + 1}
+                ];
+                for (const nn of neighborNeighbors) {
+                  if (inBounds(nn.x, nn.y) && grid[nn.y][nn.x] === VOXEL_AIR && 
+                      !(nn.x === x && nn.y === y)) {
+                    neighborConnections++;
+                  }
+                }
+                
+                if (neighborConnections === 0) {
+                  // Moving would isolate the neighbor - reject
+                  riseProb = 0;
                 }
               }
-              
-              // Penalize moves that reduce connectivity
-              if (connectedNeighborsAfter < connectedNeighborsBefore) {
-                // Reduce probability based on surface tension and connectivity loss
-                const connectivityPenalty = surfaceTension * (connectedNeighborsBefore - connectedNeighborsAfter) * 0.3;
-                riseProb *= Math.max(0.1, 1.0 - connectivityPenalty);
-              }
+            } else if (connectedNeighborsBefore > 0 && connectedNeighborsAfter < connectedNeighborsBefore) {
+              // Reduce probability to maintain connectivity
+              const connectivityPenalty = (connectedNeighborsBefore - connectedNeighborsAfter) * 0.8;
+              riseProb *= Math.max(0.05, 1.0 - connectivityPenalty);
             }
             
             if (Math.random() < Math.min(0.95, riseProb)) {
@@ -513,38 +579,71 @@ const BubbleSimulator = () => {
               if (inBounds(nx, y) && grid[y][nx] === VOXEL_WATER && !processed[y][nx]) {
                 let moveProb = 0.2 * (1 + Math.abs(horizontalVel) * 2);
                 
-                // CONNECTIVITY CHECK: At high surface tension, strongly resist lateral separation
-                if (surfaceTension > 0.3) {
-                  let connectedNeighborsBefore = 0;
-                  let connectedNeighborsAfter = 0;
-                  
-                  // Check 4-connected neighbors at current position
-                  const currentNeighbors = [
-                    {x: x - 1, y: y}, {x: x + 1, y: y},
-                    {x: x, y: y - 1}, {x: x, y: y + 1}
-                  ];
+                // CONNECTIVITY CHECK: Prevent air voxels from becoming unbound
+                let connectedNeighborsBefore = 0;
+                let connectedNeighborsAfter = 0;
+                
+                // Check 4-connected neighbors at current position
+                const currentNeighbors = [
+                  {x: x - 1, y: y}, {x: x + 1, y: y},
+                  {x: x, y: y - 1}, {x: x, y: y + 1}
+                ];
+                for (const n of currentNeighbors) {
+                  if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                    connectedNeighborsBefore++;
+                  }
+                }
+                
+                // Check 4-connected neighbors at new position
+                const newNeighbors = [
+                  {x: nx - 1, y: y}, {x: nx + 1, y: y},
+                  {x: nx, y: y - 1}, {x: nx, y: y + 1}
+                ];
+                for (const n of newNeighbors) {
+                  if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR && !(n.x === x && n.y === y)) {
+                    connectedNeighborsAfter++;
+                  }
+                }
+                
+                // CRITICAL: Prevent moves that would leave voxel unbound or isolate neighbors
+                if (connectedNeighborsAfter === 0) {
+                  // Would become unbound - reject this move completely
+                  moveProb = 0;
+                } else if (connectedNeighborsBefore === 1) {
+                  // This voxel is a critical connection point - check if moving would isolate neighbors
+                  let criticalNeighbor = null;
                   for (const n of currentNeighbors) {
                     if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
-                      connectedNeighborsBefore++;
+                      criticalNeighbor = n;
+                      break;
                     }
                   }
                   
-                  // Check 4-connected neighbors at new position
-                  const newNeighbors = [
-                    {x: nx - 1, y: y}, {x: nx + 1, y: y},
-                    {x: nx, y: y - 1}, {x: nx, y: y + 1}
-                  ];
-                  for (const n of newNeighbors) {
-                    if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR && !(n.x === x && n.y === y)) {
-                      connectedNeighborsAfter++;
+                  // Check if that neighbor would have other connections
+                  if (criticalNeighbor) {
+                    let neighborConnections = 0;
+                    const neighborNeighbors = [
+                      {x: criticalNeighbor.x - 1, y: criticalNeighbor.y},
+                      {x: criticalNeighbor.x + 1, y: criticalNeighbor.y},
+                      {x: criticalNeighbor.x, y: criticalNeighbor.y - 1},
+                      {x: criticalNeighbor.x, y: criticalNeighbor.y + 1}
+                    ];
+                    for (const nn of neighborNeighbors) {
+                      if (inBounds(nn.x, nn.y) && grid[nn.y][nn.x] === VOXEL_AIR && 
+                          !(nn.x === x && nn.y === y)) {
+                        neighborConnections++;
+                      }
+                    }
+                    
+                    if (neighborConnections === 0) {
+                      // Moving would isolate the neighbor - reject
+                      moveProb = 0;
                     }
                   }
-                  
+                } else if (connectedNeighborsBefore > 0 && connectedNeighborsAfter < connectedNeighborsBefore) {
                   // Heavily penalize lateral moves that reduce connectivity
-                  if (connectedNeighborsAfter < connectedNeighborsBefore) {
-                    const connectivityPenalty = surfaceTension * (connectedNeighborsBefore - connectedNeighborsAfter) * 0.5;
-                    moveProb *= Math.max(0.05, 1.0 - connectivityPenalty);
-                  }
+                  const connectivityPenalty = (connectedNeighborsBefore - connectedNeighborsAfter) * 0.9;
+                  moveProb *= Math.max(0.02, 1.0 - connectivityPenalty);
                 }
                 
                 if (Math.random() < Math.min(0.7, moveProb)) {
@@ -588,8 +687,9 @@ const BubbleSimulator = () => {
 
       gridRef.current = newGrid;
       velocityRef.current = newVelocity;
+      forcesRef.current = newForces;
       
-      // VALIDATION: Check if voxel counts remain constant (closed system)
+      // VALIDATION: Check if voxel counts remain constant and all air voxels are connected
       // Log any discrepancies for debugging
       // Skip first 120 frames to let system stabilize
       if (frameCount > 120 && frameCount % 60 === 0) { // Check every 60 frames (~1 second)
@@ -618,6 +718,15 @@ const BubbleSimulator = () => {
           };
           voxelLogRef.current.push(logEntry);
           console.warn(`Frame ${frameCount}: Voxel count drift detected! Air: ${airCount} (${currentAirPercent.toFixed(2)}%), Expected: ${expectedAirPercent}%`);
+        }
+        
+        // CONNECTIVITY VALIDATION: Ensure all air voxels are in a single connected component
+        const bubbles = findBubbles();
+        if (bubbles.length > 1) {
+          console.warn(`Frame ${frameCount}: Multiple bubble components detected! Count: ${bubbles.length}`);
+        }
+        if (bubbles.length > 0 && bubbles[0].length < 3) {
+          console.warn(`Frame ${frameCount}: Bubble too small! Size: ${bubbles[0].length}`);
         }
       }
     };
@@ -750,8 +859,31 @@ const BubbleSimulator = () => {
           ctx.arc(centerX, centerY, dotRadius, 0, Math.PI * 2);
           
           if (voxel === VOXEL_WATER) {
-            // Dark blue dot for water
-            ctx.fillStyle = '#0044aa';
+            // Visualize force direction using normals as RGB colors
+            const forces = forcesRef.current;
+            const fx = forces[y][x].fx;
+            const fy = forces[y][x].fy;
+            const forceMagnitude = Math.sqrt(fx * fx + fy * fy);
+            
+            if (forceMagnitude > 0.01) {
+              // Normalize force vector to get direction (normal)
+              const nx = fx / forceMagnitude;
+              const ny = fy / forceMagnitude;
+              
+              // Map normalized force direction to RGB color
+              // nx, ny range from -1 to 1, map to 0-255
+              // X-direction (left-right) -> Red channel
+              // Y-direction (up-down) -> Green channel
+              // Add base blue to maintain water-like appearance
+              const r = Math.floor((nx + 1) * 127.5); // 0-255
+              const g = Math.floor((ny + 1) * 127.5); // 0-255
+              const b = 170; // Base blue component
+              
+              ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            } else {
+              // No significant force - default dark blue
+              ctx.fillStyle = '#0044aa';
+            }
           } else if (voxel === VOXEL_AIR) {
             // White dot for air
             ctx.fillStyle = '#ffffff';
