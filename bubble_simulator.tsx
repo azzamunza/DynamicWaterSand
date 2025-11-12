@@ -26,7 +26,7 @@ const BubbleSimulator = () => {
     canvas.width = gridWidth * voxelScale;
     canvas.height = gridHeight * voxelScale;
 
-    // Initialize voxel grid
+    // Initialize voxel grid - entire window filled with water
     const grid = [];
     const velocity = [];
     
@@ -34,23 +34,9 @@ const BubbleSimulator = () => {
       grid[y] = [];
       velocity[y] = [];
       for (let x = 0; x < gridWidth; x++) {
-        // Bottom 70% filled with water, top 30% air
-        if (y > gridHeight * 0.3) {
-          grid[y][x] = VOXEL_WATER;
-        } else {
-          grid[y][x] = VOXEL_AIR;
-        }
+        // Fill entire grid with water initially
+        grid[y][x] = VOXEL_WATER;
         velocity[y][x] = { vx: 0, vy: 0 };
-      }
-    }
-    
-    // Add an air bubble strip at the bottom (2 voxels high, spanning most of width)
-    const bubbleY = gridHeight - 5;
-    for (let x = 5; x < gridWidth - 5; x++) {
-      for (let dy = 0; dy < 2; dy++) {
-        if (bubbleY + dy < gridHeight) {
-          grid[bubbleY + dy][x] = VOXEL_AIR;
-        }
       }
     }
     
@@ -95,6 +81,19 @@ const BubbleSimulator = () => {
       const grid = gridRef.current;
       const newGrid = grid.map(row => [...row]);
       const processed = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
+
+      // Spawn air bubbles at the bottom periodically
+      // Random spawn to create natural bubble streams
+      if (Math.random() < 0.15) {
+        const spawnX = Math.floor(Math.random() * (gridWidth - 10)) + 5;
+        const spawnWidth = Math.floor(Math.random() * 3) + 2; // 2-4 voxels wide
+        for (let x = spawnX; x < Math.min(spawnX + spawnWidth, gridWidth); x++) {
+          const bottomY = gridHeight - 1;
+          if (grid[bottomY][x] === VOXEL_WATER) {
+            newGrid[bottomY][x] = VOXEL_AIR;
+          }
+        }
+      }
 
       // Process from bottom to top for water, top to bottom for air
       // This ensures proper settling behavior
@@ -165,6 +164,158 @@ const BubbleSimulator = () => {
       gridRef.current = newGrid;
     };
 
+    // Find all connected components (bubbles) using flood fill
+    const findBubbles = () => {
+      const grid = gridRef.current;
+      const visited = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
+      const bubbles: Array<Array<{x: number, y: number}>> = [];
+
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (grid[y][x] === VOXEL_AIR && !visited[y][x]) {
+            // Start a new bubble with flood fill
+            const bubble: Array<{x: number, y: number}> = [];
+            const queue = [{x, y}];
+            visited[y][x] = true;
+
+            while (queue.length > 0) {
+              const pos = queue.shift()!;
+              bubble.push(pos);
+
+              // Check 4-connected neighbors
+              const neighbors = [
+                {x: pos.x - 1, y: pos.y},
+                {x: pos.x + 1, y: pos.y},
+                {x: pos.x, y: pos.y - 1},
+                {x: pos.x, y: pos.y + 1}
+              ];
+
+              for (const neighbor of neighbors) {
+                if (inBounds(neighbor.x, neighbor.y) && 
+                    !visited[neighbor.y][neighbor.x] && 
+                    grid[neighbor.y][neighbor.x] === VOXEL_AIR) {
+                  visited[neighbor.y][neighbor.x] = true;
+                  queue.push(neighbor);
+                }
+              }
+            }
+
+            bubbles.push(bubble);
+          }
+        }
+      }
+
+      return bubbles;
+    };
+
+    // Moore-Neighbor tracing algorithm to extract bubble boundary
+    // Traces the outer edge of a connected component of air voxels
+    const traceBubbleContour = (bubble: Array<{x: number, y: number}>) => {
+      if (bubble.length === 0) return [];
+
+      const grid = gridRef.current;
+      const bubbleSet = new Set(bubble.map(p => `${p.x},${p.y}`));
+      
+      // Find a starting point (topmost, then leftmost air voxel at boundary)
+      let start = bubble[0];
+      for (const pos of bubble) {
+        // Check if this is a boundary voxel (has water neighbor)
+        let isBoundary = false;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = pos.x + dx;
+            const ny = pos.y + dy;
+            if (inBounds(nx, ny) && grid[ny][nx] === VOXEL_WATER) {
+              isBoundary = true;
+              break;
+            }
+          }
+          if (isBoundary) break;
+        }
+        if (isBoundary && (pos.y < start.y || (pos.y === start.y && pos.x < start.x))) {
+          start = pos;
+        }
+      }
+
+      // Moore neighborhood (8-connected, clockwise from top)
+      const directions = [
+        {dx: 0, dy: -1},  // N
+        {dx: 1, dy: -1},  // NE
+        {dx: 1, dy: 0},   // E
+        {dx: 1, dy: 1},   // SE
+        {dx: 0, dy: 1},   // S
+        {dx: -1, dy: 1},  // SW
+        {dx: -1, dy: 0},  // W
+        {dx: -1, dy: -1}  // NW
+      ];
+
+      const contour: Array<{x: number, y: number}> = [];
+      let current = start;
+      let dirIdx = 6; // Start looking west (since we want to go counter-clockwise around air)
+      const maxSteps = bubble.length * 4; // Prevent infinite loops
+      let steps = 0;
+
+      do {
+        contour.push({x: current.x, y: current.y});
+        
+        // Look for next boundary pixel
+        let found = false;
+        for (let i = 0; i < 8; i++) {
+          const checkIdx = (dirIdx + i) % 8;
+          const dir = directions[checkIdx];
+          const nx = current.x + dir.dx;
+          const ny = current.y + dir.dy;
+          
+          if (inBounds(nx, ny) && bubbleSet.has(`${nx},${ny}`)) {
+            current = {x: nx, y: ny};
+            // Turn left (counter-clockwise) to stay along the edge
+            dirIdx = (checkIdx + 6) % 8;
+            found = true;
+            break;
+          }
+        }
+        
+        if (!found) break;
+        steps++;
+      } while ((current.x !== start.x || current.y !== start.y) && steps < maxSteps);
+
+      return contour;
+    };
+
+    // Chaikin's corner cutting algorithm for path smoothing
+    // Applies multiple iterations to create smooth curves (surface tension simulation)
+    const smoothPath = (path: Array<{x: number, y: number}>, iterations: number = 2) => {
+      if (path.length < 3) return path;
+
+      let smoothed = [...path];
+      
+      for (let iter = 0; iter < iterations; iter++) {
+        const newPath: Array<{x: number, y: number}> = [];
+        
+        for (let i = 0; i < smoothed.length; i++) {
+          const p1 = smoothed[i];
+          const p2 = smoothed[(i + 1) % smoothed.length];
+          
+          // Cut corners: place points at 1/4 and 3/4 along each segment
+          const q = {
+            x: 0.75 * p1.x + 0.25 * p2.x,
+            y: 0.75 * p1.y + 0.25 * p2.y
+          };
+          const r = {
+            x: 0.25 * p1.x + 0.75 * p2.x,
+            y: 0.25 * p1.y + 0.75 * p2.y
+          };
+          
+          newPath.push(q);
+          newPath.push(r);
+        }
+        
+        smoothed = newPath;
+      }
+      
+      return smoothed;
+    };
+
     // Render
     const render = () => {
       const grid = gridRef.current;
@@ -173,18 +324,60 @@ const BubbleSimulator = () => {
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Draw voxels
+      // Draw dots for each voxel type
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           const voxel = grid[y][x];
+          const centerX = (x + 0.5) * voxelScale;
+          const centerY = (y + 0.5) * voxelScale;
+          const dotRadius = Math.max(1, voxelScale * 0.15);
           
-          // Both water and air are black (no fill), only interface is visible
-          // Draw blue outline for interface voxels
-          if (isInterface(x, y)) {
-            ctx.strokeStyle = '#0088ff';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x * voxelScale, y * voxelScale, voxelScale, voxelScale);
+          ctx.beginPath();
+          ctx.arc(centerX, centerY, dotRadius, 0, Math.PI * 2);
+          
+          if (voxel === VOXEL_WATER) {
+            // Dark blue dot for water
+            ctx.fillStyle = '#0044aa';
+          } else if (voxel === VOXEL_AIR) {
+            // White dot for air
+            ctx.fillStyle = '#ffffff';
           }
+          ctx.fill();
+        }
+      }
+
+      // Find all bubbles (connected air voxel groups)
+      const bubbles = findBubbles();
+
+      // Draw smooth white outline around each bubble
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      for (const bubble of bubbles) {
+        if (bubble.length < 3) continue; // Skip very small bubbles
+        
+        // Extract bubble boundary using Moore-Neighbor tracing
+        const contour = traceBubbleContour(bubble);
+        if (contour.length < 3) continue;
+        
+        // Apply Chaikin's smoothing algorithm for surface tension effect
+        const smoothedContour = smoothPath(contour, 2);
+        
+        // Draw the smoothed outline
+        if (smoothedContour.length > 0) {
+          ctx.beginPath();
+          const firstPoint = smoothedContour[0];
+          ctx.moveTo((firstPoint.x + 0.5) * voxelScale, (firstPoint.y + 0.5) * voxelScale);
+          
+          for (let i = 1; i < smoothedContour.length; i++) {
+            const point = smoothedContour[i];
+            ctx.lineTo((point.x + 0.5) * voxelScale, (point.y + 0.5) * voxelScale);
+          }
+          
+          ctx.closePath();
+          ctx.stroke();
         }
       }
     };
