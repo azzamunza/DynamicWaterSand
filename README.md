@@ -35,10 +35,14 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
 
 - **Sand Art Simulation**: [index.html](https://azzamunza.github.io/DynamicWaterSand/) - Main liquid sand art simulation
 - **Bubble Physics**: [bubbles.html](https://azzamunza.github.io/DynamicWaterSand/bubbles.html) - Interactive voxel-based air bubble physics simulation with:
+  - **SPH-Based Fluid Dynamics**: Smoothed Particle Hydrodynamics for realistic bubble behavior
+  - **Pressure Forces**: Tait equation of state for proper compressibility
+  - **Viscosity Modeling**: Internal friction for smooth fluid motion
+  - **Surface Tension**: Color field method at air-water interfaces
   - Smooth bubble outlines using Moore-Neighbor contour tracing
-  - Surface tension simulation via Chaikin's path smoothing algorithm
+  - Path smoothing via Chaikin's algorithm
   - Dark blue dots for water, white dots for air
-  - Air spawns at bottom and rises to accumulate at top
+  - Configurable parameters: gravity, viscosity, surface tension, air percentage
 
 ## Files
 
@@ -47,4 +51,5 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
 - `simulation.js` - Particle physics and rendering
 - `bubbles.html` - Bubble simulation page
 - `bubbles.js` - Transpiled bubble simulator component
-- `bubble_simulator.tsx` - React/TypeScript source for bubble simulation
+- `bubble_simulator.tsx` - React/TypeScript source for bubble simulation with SPH physics
+- `SPH_IMPLEMENTATION.md` - Detailed documentation of the SPH fluid dynamics implementation
