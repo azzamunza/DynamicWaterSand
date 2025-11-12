@@ -249,6 +249,17 @@ const BubbleSimulator = () => {
       const density = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(0));
       const pressure = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(0));
 
+      // Detect bubble components for cohesion force calculation
+      const bubbles = findBubbles();
+      const bubbleId = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(-1));
+
+      // Map each air voxel to its bubble ID
+      for (let i = 0; i < bubbles.length; i++) {
+        for (const pos of bubbles[i]) {
+          bubbleId[pos.y][pos.x] = i;
+        }
+      }
+
       // First pass: Calculate density for each particle using SPH kernel
       const searchRadius = Math.ceil(SPH_PARAMS.H);
       for (let y = 0; y < gridHeight; y++) {
@@ -284,7 +295,7 @@ const BubbleSimulator = () => {
         }
       }
 
-      // Third pass: Apply SPH forces (pressure, viscosity, surface tension, gravity)
+      // Third pass: Apply SPH forces (pressure, viscosity, surface tension, cohesion, gravity)
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           if (grid[y][x] === VOXEL_EMPTY) continue;
@@ -294,6 +305,8 @@ const BubbleSimulator = () => {
           let viscosityForceY = 0;
           let surfaceTensionForceX = 0;
           let surfaceTensionForceY = 0;
+          let cohesionForceX = 0;
+          let cohesionForceY = 0;
           let colorFieldGradientX = 0;
           let colorFieldGradientY = 0;
           let colorFieldLaplacian = 0;
@@ -336,6 +349,29 @@ const BubbleSimulator = () => {
                 colorFieldGradientY += colorValue * SPH_PARAMS.PARTICLE_MASS * kernelGrad.y / Math.max(density[ny][nx], 0.01);
                 colorFieldLaplacian += colorValue * SPH_PARAMS.PARTICLE_MASS * viscosityKernelLaplacian(r, SPH_PARAMS.H) / Math.max(density[ny][nx], 0.01);
               }
+
+              // COHESION FORCE: Between air voxels in the same bubble
+              // This keeps bubble clusters together, scaled by surface tension
+              if (currentType === VOXEL_AIR && neighborType === VOXEL_AIR) {
+                const currentBubbleId = bubbleId[y][x];
+                const neighborBubbleId = bubbleId[ny][nx];
+
+                // Only apply cohesion within the same bubble component
+                if (currentBubbleId === neighborBubbleId && currentBubbleId >= 0) {
+                  // Cohesion pulls air voxels toward each other
+                  // Strength increases dramatically with surface tension
+                  const cohesionStrength = surfaceTension * surfaceTension * 100.0;
+
+                  // Attractive force toward neighbor (opposite direction from displacement)
+                  const attractionX = -dx / r; // Normalized direction toward neighbor
+                  const attractionY = -dy / r;
+
+                  // Kernel function provides distance-based weighting
+                  const kernelWeight = poly6Kernel(r, SPH_PARAMS.H);
+                  cohesionForceX += cohesionStrength * kernelWeight * attractionX;
+                  cohesionForceY += cohesionStrength * kernelWeight * attractionY;
+                }
+              }
             }
           }
 
@@ -352,13 +388,33 @@ const BubbleSimulator = () => {
           const gravityForce = currentType === VOXEL_AIR ? -gravity * 2.0 : gravity * 0.5;
 
           // Combine all forces and update velocity
-          const totalForceX = pressureForceX + viscosityForceX + surfaceTensionForceX;
-          const totalForceY = pressureForceY + viscosityForceY + surfaceTensionForceY + gravityForce;
+          const totalForceX = pressureForceX + viscosityForceX + surfaceTensionForceX + cohesionForceX;
+          const totalForceY = pressureForceY + viscosityForceY + surfaceTensionForceY + cohesionForceY + gravityForce;
 
           // Scale forces for stability
           const forceScale = 0.01;
           newVelocity[y][x].vx += totalForceX * forceScale;
           newVelocity[y][x].vy += totalForceY * forceScale;
+
+          // WATER DISPLACEMENT by rising air bubbles
+          // When air rises, it pushes adjacent water downward and sideways
+          if (currentType === VOXEL_AIR && gravityForce < 0) {
+            // Air is rising, apply drag force to adjacent water
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const wx = x + dx;
+                const wy = y + dy;
+                if (inBounds(wx, wy) && grid[wy][wx] === VOXEL_WATER) {
+                  // Push water away from rising bubble
+                  const pushStrength = 0.5 * convection;
+                  // Downward and sideways push
+                  newVelocity[wy][wx].vx += dx * pushStrength * 0.02;
+                  newVelocity[wy][wx].vy += (Math.abs(dy) > 0 ? dy : 0.5) * pushStrength * 0.02;
+                }
+              }
+            }
+          }
         }
       }
 
@@ -372,7 +428,7 @@ const BubbleSimulator = () => {
       }
 
       // Fifth pass: Air bubbles rise (process top to bottom)
-      // Enhanced with velocity-based movement decisions
+      // Enhanced with velocity-based movement decisions and connectivity preservation
       for (let y = 1; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           if (processed[y][x]) continue;
@@ -380,7 +436,62 @@ const BubbleSimulator = () => {
             // Air wants to rise - swap with water above
             // Use velocity magnitude to determine probability
             const upwardVelocity = -velocity[y][x].vy; // Negative vy is upward
-            const riseProb = 0.6 + Math.max(0, upwardVelocity) * 0.4;
+            let riseProb = 0.6 + Math.max(0, upwardVelocity) * 0.4;
+
+            // CONNECTIVITY CHECK: At high surface tension, resist breaking bubble apart
+            // Count connected air neighbors before and after potential move
+            if (surfaceTension > 0.3) {
+              let connectedNeighborsBefore = 0;
+              let connectedNeighborsAfter = 0;
+
+              // Check 4-connected neighbors at current position
+              const currentNeighbors = [{
+                x: x - 1,
+                y: y
+              }, {
+                x: x + 1,
+                y: y
+              }, {
+                x: x,
+                y: y - 1
+              }, {
+                x: x,
+                y: y + 1
+              }];
+              for (const n of currentNeighbors) {
+                if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                  connectedNeighborsBefore++;
+                }
+              }
+
+              // Check 4-connected neighbors at new position
+              const newNeighbors = [{
+                x: x - 1,
+                y: y - 1
+              }, {
+                x: x + 1,
+                y: y - 1
+              }, {
+                x: x,
+                y: y - 2
+              }, {
+                x: x,
+                y: y
+              } // y stays as water
+              ];
+              for (const n of newNeighbors) {
+                if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                  connectedNeighborsAfter++;
+                }
+              }
+
+              // Penalize moves that reduce connectivity
+              if (connectedNeighborsAfter < connectedNeighborsBefore) {
+                // Reduce probability based on surface tension and connectivity loss
+                const connectivityPenalty = surfaceTension * (connectedNeighborsBefore - connectedNeighborsAfter) * 0.3;
+                riseProb *= Math.max(0.1, 1.0 - connectivityPenalty);
+              }
+            }
             if (Math.random() < Math.min(0.95, riseProb)) {
               newGrid[y - 1][x] = VOXEL_AIR;
               newGrid[y][x] = VOXEL_WATER;
@@ -396,7 +507,7 @@ const BubbleSimulator = () => {
       }
 
       // Sixth pass: Sideways spreading (air moves horizontally through water)
-      // Enhanced with velocity-driven horizontal movement
+      // Enhanced with velocity-driven horizontal movement and connectivity preservation
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           if (processed[y][x]) continue;
@@ -410,7 +521,59 @@ const BubbleSimulator = () => {
               const dir = Math.abs(horizontalVel) > 0.1 ? horizontalVel > 0 ? 1 : -1 : Math.random() < 0.5 ? 1 : -1;
               const nx = x + dir;
               if (inBounds(nx, y) && grid[y][nx] === VOXEL_WATER && !processed[y][nx]) {
-                const moveProb = 0.2 * (1 + Math.abs(horizontalVel) * 2);
+                let moveProb = 0.2 * (1 + Math.abs(horizontalVel) * 2);
+
+                // CONNECTIVITY CHECK: At high surface tension, strongly resist lateral separation
+                if (surfaceTension > 0.3) {
+                  let connectedNeighborsBefore = 0;
+                  let connectedNeighborsAfter = 0;
+
+                  // Check 4-connected neighbors at current position
+                  const currentNeighbors = [{
+                    x: x - 1,
+                    y: y
+                  }, {
+                    x: x + 1,
+                    y: y
+                  }, {
+                    x: x,
+                    y: y - 1
+                  }, {
+                    x: x,
+                    y: y + 1
+                  }];
+                  for (const n of currentNeighbors) {
+                    if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR) {
+                      connectedNeighborsBefore++;
+                    }
+                  }
+
+                  // Check 4-connected neighbors at new position
+                  const newNeighbors = [{
+                    x: nx - 1,
+                    y: y
+                  }, {
+                    x: nx + 1,
+                    y: y
+                  }, {
+                    x: nx,
+                    y: y - 1
+                  }, {
+                    x: nx,
+                    y: y + 1
+                  }];
+                  for (const n of newNeighbors) {
+                    if (inBounds(n.x, n.y) && grid[n.y][n.x] === VOXEL_AIR && !(n.x === x && n.y === y)) {
+                      connectedNeighborsAfter++;
+                    }
+                  }
+
+                  // Heavily penalize lateral moves that reduce connectivity
+                  if (connectedNeighborsAfter < connectedNeighborsBefore) {
+                    const connectivityPenalty = surfaceTension * (connectedNeighborsBefore - connectedNeighborsAfter) * 0.5;
+                    moveProb *= Math.max(0.05, 1.0 - connectivityPenalty);
+                  }
+                }
                 if (Math.random() < Math.min(0.7, moveProb)) {
                   newGrid[y][nx] = VOXEL_AIR;
                   newGrid[y][x] = VOXEL_WATER;
