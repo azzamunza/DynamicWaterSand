@@ -34,7 +34,11 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
 ## Simulations
 
 - **Sand Art Simulation**: [index.html](https://azzamunza.github.io/DynamicWaterSand/) - Main liquid sand art simulation
-- **Bubble Physics**: [bubbles.html](https://azzamunza.github.io/DynamicWaterSand/bubbles.html) - Interactive air bubble physics simulation
+- **Bubble Physics**: [bubbles.html](https://azzamunza.github.io/DynamicWaterSand/bubbles.html) - Interactive voxel-based air bubble physics simulation with:
+  - Smooth bubble outlines using Moore-Neighbor contour tracing
+  - Surface tension simulation via Chaikin's path smoothing algorithm
+  - Dark blue dots for water, white dots for air
+  - Air spawns at bottom and rises to accumulate at top
 
 ## Files
 
