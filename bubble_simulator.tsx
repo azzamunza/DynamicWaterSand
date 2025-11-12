@@ -5,6 +5,59 @@ const VOXEL_EMPTY = 0;
 const VOXEL_WATER = 1;
 const VOXEL_AIR = 2;
 
+// SPH (Smoothed Particle Hydrodynamics) Constants
+const SPH_PARAMS = {
+  // Kernel smoothing length (interaction radius)
+  H: 3.0,
+  // Rest density for water
+  REST_DENSITY_WATER: 1000.0,
+  // Rest density for air (much lighter)
+  REST_DENSITY_AIR: 1.2,
+  // Gas stiffness constant for pressure calculation
+  GAS_STIFFNESS: 1000.0,
+  // Viscosity coefficient
+  VISCOSITY_WATER: 0.5,
+  VISCOSITY_AIR: 0.01,
+  // Surface tension coefficient
+  SURFACE_TENSION_COEFF: 0.1,
+  // Pressure exponent in Tait equation
+  GAMMA: 7.0,
+  // Mass per particle
+  PARTICLE_MASS: 1.0
+};
+
+// SPH Kernel Functions
+// Poly6 kernel for density and pressure
+const poly6Kernel = (r: number, h: number): number => {
+  if (r >= h) return 0;
+  const h2 = h * h;
+  const h9 = h2 * h2 * h2 * h2 * h;
+  const factor = 315.0 / (64.0 * Math.PI * h9);
+  const diff = h2 - r * r;
+  return factor * diff * diff * diff;
+};
+
+// Gradient of Spiky kernel for pressure forces
+const spikyKernelGradient = (dx: number, dy: number, r: number, h: number): {x: number, y: number} => {
+  if (r >= h || r < 0.0001) return {x: 0, y: 0};
+  const h6 = h * h * h * h * h * h;
+  const factor = -45.0 / (Math.PI * h6);
+  const diff = h - r;
+  const gradMag = factor * diff * diff / r;
+  return {
+    x: gradMag * dx,
+    y: gradMag * dy
+  };
+};
+
+// Laplacian of viscosity kernel for viscosity forces
+const viscosityKernelLaplacian = (r: number, h: number): number => {
+  if (r >= h) return 0;
+  const h6 = h * h * h * h * h * h;
+  const factor = 45.0 / (Math.PI * h6);
+  return factor * (h - r);
+};
+
 const BubbleSimulator = () => {
   const canvasRef = useRef(null);
   const [isRunning, setIsRunning] = useState(true);
@@ -157,7 +210,7 @@ const BubbleSimulator = () => {
       return bubbles;
     };
 
-    // Physics update using cellular automata approach with enhanced bubble dynamics
+    // Physics update using SPH-based fluid dynamics with cellular automata
     const updatePhysics = (frameCount: number) => {
       const grid = gridRef.current;
       const velocity = velocityRef.current;
@@ -168,93 +221,169 @@ const BubbleSimulator = () => {
       // CLOSED SYSTEM: No air spawning during simulation
       // Air is only initialized once at grid creation
       
-      // Enhanced bubble dynamics with directional vectors
-      // Rising bubbles push water downward and attract trailing bubbles
+      // SPH-based fluid dynamics implementation
+      // Calculate density, pressure, and forces for each voxel
       
-      // First pass: Apply buoyancy forces to velocity vectors
+      const density: number[][] = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(0));
+      const pressure: number[][] = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(0));
+      
+      // First pass: Calculate density for each particle using SPH kernel
+      const searchRadius = Math.ceil(SPH_PARAMS.H);
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
-          if (grid[y][x] === VOXEL_AIR) {
-            // Air has upward velocity from buoyancy
-            newVelocity[y][x].vy -= gravity * 2;
-            
-            // Rising air pushes nearby water downward (convection)
-            for (let dy = -1; dy <= 1; dy++) {
-              for (let dx = -1; dx <= 1; dx++) {
-                if (dx === 0 && dy === 0) continue;
-                const nx = x + dx;
-                const ny = y + dy;
-                if (inBounds(nx, ny) && grid[ny][nx] === VOXEL_WATER) {
-                  // Push water down and away
-                  const distance = Math.sqrt(dx * dx + dy * dy);
-                  newVelocity[ny][nx].vy += gravity * convection / distance;
-                  newVelocity[ny][nx].vx += dx * convection * 0.3 / distance;
-                }
-              }
-            }
-          } else if (grid[y][x] === VOXEL_WATER) {
-            // Water has downward velocity from gravity
-            newVelocity[y][x].vy += gravity * 0.5;
-          }
-        }
-      }
-      
-      // Second pass: Bubble attraction (trailing bubbles move toward rising bubbles)
-      // This creates dome-like appearance
-      const bubbles = findBubbles();
-      for (const bubble of bubbles) {
-        if (bubble.length < 3) continue;
-        
-        // Calculate bubble center and average upward velocity
-        let centerX = 0, centerY = 0, avgVy = 0;
-        for (const pos of bubble) {
-          centerX += pos.x;
-          centerY += pos.y;
-          avgVy += velocity[pos.y][pos.x].vy;
-        }
-        centerX /= bubble.length;
-        centerY /= bubble.length;
-        avgVy /= bubble.length;
-        
-        // If bubble is rising (negative vy), attract nearby air voxels
-        if (avgVy < -0.05) {
-          const attractionRadius = 5 + surfaceTension * 10;
-          for (let y = Math.max(0, Math.floor(centerY - attractionRadius)); 
-               y < Math.min(gridHeight, Math.ceil(centerY + attractionRadius)); y++) {
-            for (let x = Math.max(0, Math.floor(centerX - attractionRadius)); 
-                 x < Math.min(gridWidth, Math.ceil(centerX + attractionRadius)); x++) {
-              if (grid[y][x] === VOXEL_AIR) {
-                const dx = centerX - x;
-                const dy = centerY - y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist > 0 && dist < attractionRadius) {
-                  // Attract trailing air toward rising bubble
-                  const force = surfaceTension * 0.3 / (dist + 1);
-                  newVelocity[y][x].vx += dx * force;
-                  newVelocity[y][x].vy += dy * force * 0.5;
-                }
+          if (grid[y][x] === VOXEL_EMPTY) continue;
+          
+          let densitySum = 0;
+          
+          // Search in kernel radius
+          for (let ny = Math.max(0, y - searchRadius); ny <= Math.min(gridHeight - 1, y + searchRadius); ny++) {
+            for (let nx = Math.max(0, x - searchRadius); nx <= Math.min(gridWidth - 1, x + searchRadius); nx++) {
+              if (grid[ny][nx] === VOXEL_EMPTY) continue;
+              
+              const dx = x - nx;
+              const dy = y - ny;
+              const r = Math.sqrt(dx * dx + dy * dy);
+              
+              if (r < SPH_PARAMS.H) {
+                densitySum += SPH_PARAMS.PARTICLE_MASS * poly6Kernel(r, SPH_PARAMS.H);
               }
             }
           }
+          
+          density[y][x] = Math.max(densitySum, 0.01); // Prevent zero density
         }
       }
       
-      // Third pass: Apply velocity damping
+      // Second pass: Calculate pressure using Tait equation of state
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
-          newVelocity[y][x].vx *= 0.85;
-          newVelocity[y][x].vy *= 0.85;
+          if (grid[y][x] === VOXEL_EMPTY) continue;
+          
+          const restDensity = grid[y][x] === VOXEL_AIR ? 
+            SPH_PARAMS.REST_DENSITY_AIR : SPH_PARAMS.REST_DENSITY_WATER;
+          
+          // Tait equation: p = k * ((ρ/ρ0)^γ - 1)
+          const densityRatio = density[y][x] / restDensity;
+          pressure[y][x] = SPH_PARAMS.GAS_STIFFNESS * (Math.pow(densityRatio, SPH_PARAMS.GAMMA) - 1);
         }
       }
       
-      // Fourth pass: Air bubbles rise (process top to bottom)
+      // Third pass: Apply SPH forces (pressure, viscosity, surface tension, gravity)
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (grid[y][x] === VOXEL_EMPTY) continue;
+          
+          let pressureForceX = 0;
+          let pressureForceY = 0;
+          let viscosityForceX = 0;
+          let viscosityForceY = 0;
+          let surfaceTensionForceX = 0;
+          let surfaceTensionForceY = 0;
+          let colorFieldGradientX = 0;
+          let colorFieldGradientY = 0;
+          let colorFieldLaplacian = 0;
+          
+          const currentType = grid[y][x];
+          const currentViscosity = currentType === VOXEL_AIR ? 
+            SPH_PARAMS.VISCOSITY_AIR : SPH_PARAMS.VISCOSITY_WATER;
+          
+          // Search neighbors for force calculations
+          for (let ny = Math.max(0, y - searchRadius); ny <= Math.min(gridHeight - 1, y + searchRadius); ny++) {
+            for (let nx = Math.max(0, x - searchRadius); nx <= Math.min(gridWidth - 1, x + searchRadius); nx++) {
+              if (nx === x && ny === y) continue;
+              if (grid[ny][nx] === VOXEL_EMPTY) continue;
+              
+              const dx = x - nx;
+              const dy = y - ny;
+              const r = Math.sqrt(dx * dx + dy * dy);
+              
+              if (r >= SPH_PARAMS.H || r < 0.0001) continue;
+              
+              const neighborType = grid[ny][nx];
+              
+              // Pressure force (using symmetric pressure gradient)
+              const pressureGrad = spikyKernelGradient(dx, dy, r, SPH_PARAMS.H);
+              const avgPressure = (pressure[y][x] + pressure[ny][nx]) / 2.0;
+              const pressureTerm = -SPH_PARAMS.PARTICLE_MASS * avgPressure / 
+                Math.max(density[ny][nx], 0.01);
+              pressureForceX += pressureTerm * pressureGrad.x;
+              pressureForceY += pressureTerm * pressureGrad.y;
+              
+              // Viscosity force
+              const neighborViscosity = neighborType === VOXEL_AIR ? 
+                SPH_PARAMS.VISCOSITY_AIR : SPH_PARAMS.VISCOSITY_WATER;
+              const avgViscosity = (currentViscosity + neighborViscosity) / 2.0;
+              const velocityDiffX = velocity[ny][nx].vx - velocity[y][x].vx;
+              const velocityDiffY = velocity[ny][nx].vy - velocity[y][x].vy;
+              const viscosityLaplacian = viscosityKernelLaplacian(r, SPH_PARAMS.H);
+              const viscosityTerm = avgViscosity * SPH_PARAMS.PARTICLE_MASS * viscosityLaplacian /
+                Math.max(density[ny][nx], 0.01);
+              viscosityForceX += viscosityTerm * velocityDiffX;
+              viscosityForceY += viscosityTerm * velocityDiffY;
+              
+              // Surface tension using color field method (at air-water interface)
+              if (currentType !== neighborType) {
+                const colorValue = neighborType === VOXEL_AIR ? 1.0 : 0.0;
+                const kernelGrad = spikyKernelGradient(dx, dy, r, SPH_PARAMS.H);
+                colorFieldGradientX += colorValue * SPH_PARAMS.PARTICLE_MASS * kernelGrad.x / 
+                  Math.max(density[ny][nx], 0.01);
+                colorFieldGradientY += colorValue * SPH_PARAMS.PARTICLE_MASS * kernelGrad.y / 
+                  Math.max(density[ny][nx], 0.01);
+                colorFieldLaplacian += colorValue * SPH_PARAMS.PARTICLE_MASS * 
+                  viscosityKernelLaplacian(r, SPH_PARAMS.H) / Math.max(density[ny][nx], 0.01);
+              }
+            }
+          }
+          
+          // Apply surface tension force at interfaces
+          const colorFieldGradientMag = Math.sqrt(
+            colorFieldGradientX * colorFieldGradientX + 
+            colorFieldGradientY * colorFieldGradientY
+          );
+          if (colorFieldGradientMag > 0.01) {
+            const normalX = colorFieldGradientX / colorFieldGradientMag;
+            const normalY = colorFieldGradientY / colorFieldGradientMag;
+            surfaceTensionForceX = -surfaceTension * SPH_PARAMS.SURFACE_TENSION_COEFF * 
+              colorFieldLaplacian * normalX;
+            surfaceTensionForceY = -surfaceTension * SPH_PARAMS.SURFACE_TENSION_COEFF * 
+              colorFieldLaplacian * normalY;
+          }
+          
+          // Apply gravity (buoyancy for air, weight for water)
+          const gravityForce = currentType === VOXEL_AIR ? 
+            -gravity * 2.0 : gravity * 0.5;
+          
+          // Combine all forces and update velocity
+          const totalForceX = pressureForceX + viscosityForceX + surfaceTensionForceX;
+          const totalForceY = pressureForceY + viscosityForceY + surfaceTensionForceY + gravityForce;
+          
+          // Scale forces for stability
+          const forceScale = 0.01;
+          newVelocity[y][x].vx += totalForceX * forceScale;
+          newVelocity[y][x].vy += totalForceY * forceScale;
+        }
+      }
+      
+      // Fourth pass: Apply velocity damping for stability
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          // Damping helps prevent instabilities
+          newVelocity[y][x].vx *= 0.9;
+          newVelocity[y][x].vy *= 0.9;
+        }
+      }
+      
+      // Fifth pass: Air bubbles rise (process top to bottom)
+      // Enhanced with velocity-based movement decisions
       for (let y = 1; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           if (processed[y][x]) continue;
           
           if (grid[y][x] === VOXEL_AIR && grid[y - 1][x] === VOXEL_WATER) {
             // Air wants to rise - swap with water above
-            const riseProb = 0.7 + Math.abs(velocity[y][x].vy) * 0.3;
+            // Use velocity magnitude to determine probability
+            const upwardVelocity = -velocity[y][x].vy; // Negative vy is upward
+            const riseProb = 0.6 + Math.max(0, upwardVelocity) * 0.4;
             if (Math.random() < Math.min(0.95, riseProb)) {
               newGrid[y - 1][x] = VOXEL_AIR;
               newGrid[y][x] = VOXEL_WATER;
@@ -269,7 +398,8 @@ const BubbleSimulator = () => {
         }
       }
 
-      // Fifth pass: Sideways spreading (air moves horizontally through water)
+      // Sixth pass: Sideways spreading (air moves horizontally through water)
+      // Enhanced with velocity-driven horizontal movement
       for (let y = 0; y < gridHeight; y++) {
         for (let x = 0; x < gridWidth; x++) {
           if (processed[y][x]) continue;
@@ -281,11 +411,14 @@ const BubbleSimulator = () => {
             if (blockedAbove) {
               // Try to spread sideways based on velocity
               const horizontalVel = velocity[y][x].vx;
-              const dir = horizontalVel > 0 ? 1 : horizontalVel < 0 ? -1 : (Math.random() < 0.5 ? 1 : -1);
+              // Prefer direction of velocity, or random if velocity is low
+              const dir = Math.abs(horizontalVel) > 0.1 ? 
+                (horizontalVel > 0 ? 1 : -1) : 
+                (Math.random() < 0.5 ? 1 : -1);
               const nx = x + dir;
               if (inBounds(nx, y) && grid[y][nx] === VOXEL_WATER && !processed[y][nx]) {
-                const moveProb = 0.3 * convection * (1 + Math.abs(horizontalVel));
-                if (Math.random() < Math.min(0.8, moveProb)) {
+                const moveProb = 0.2 * (1 + Math.abs(horizontalVel) * 2);
+                if (Math.random() < Math.min(0.7, moveProb)) {
                   newGrid[y][nx] = VOXEL_AIR;
                   newGrid[y][x] = VOXEL_WATER;
                   const tempVel = newVelocity[y][x];
@@ -300,14 +433,17 @@ const BubbleSimulator = () => {
         }
       }
 
-      // Sixth pass: Water falls (process bottom to top)
+      // Seventh pass: Water falls (process bottom to top)
+      // Enhanced with velocity-based movement decisions
       for (let y = gridHeight - 2; y >= 0; y--) {
         for (let x = 0; x < gridWidth; x++) {
           if (processed[y][x]) continue;
           
           if (grid[y][x] === VOXEL_WATER && grid[y + 1][x] === VOXEL_AIR) {
             // Water wants to fall - swap with air below
-            const fallProb = 0.9 + Math.abs(velocity[y][x].vy) * 0.1;
+            // Use velocity magnitude to determine probability
+            const downwardVelocity = velocity[y][x].vy; // Positive vy is downward
+            const fallProb = 0.85 + Math.max(0, downwardVelocity) * 0.15;
             if (Math.random() < Math.min(0.98, fallProb)) {
               newGrid[y + 1][x] = VOXEL_WATER;
               newGrid[y][x] = VOXEL_AIR;
