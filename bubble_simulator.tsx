@@ -13,9 +13,12 @@ const BubbleSimulator = () => {
   const [voxelScale, setVoxelScale] = useState(8);
   const [gravity, setGravity] = useState(0.1);
   const [convection, setConvection] = useState(0.5);
+  const [airPercentage, setAirPercentage] = useState(8); // Max 8% air in system
+  const [surfaceTension, setSurfaceTension] = useState(0.5); // Controls bubble merging/separation
   const animationRef = useRef(null);
   const gridRef = useRef([]);
   const velocityRef = useRef([]);
+  const voxelLogRef = useRef<Array<{frame: number, airCount: number, waterCount: number, airPercent: number}>>([]);
 
   // Initialize grid and canvas
   useEffect(() => {
@@ -26,23 +29,56 @@ const BubbleSimulator = () => {
     canvas.width = gridWidth * voxelScale;
     canvas.height = gridHeight * voxelScale;
 
-    // Initialize voxel grid - entire window filled with water
+    // Initialize voxel grid - fill with water first, then add air at bottom
     const grid = [];
     const velocity = [];
     
+    // First, fill everything with water
     for (let y = 0; y < gridHeight; y++) {
       grid[y] = [];
       velocity[y] = [];
       for (let x = 0; x < gridWidth; x++) {
-        // Fill entire grid with water initially
         grid[y][x] = VOXEL_WATER;
         velocity[y][x] = { vx: 0, vy: 0 };
       }
     }
     
+    // Calculate total voxels and desired air voxels based on air percentage
+    const totalVoxels = gridWidth * gridHeight;
+    const targetAirVoxels = Math.round(totalVoxels * (airPercentage / 100));
+    
+    // Spawn air bubbles at the bottom in a single initialization
+    // Use bottom rows for air placement to simulate bubbles at source
+    let airVoxelsPlaced = 0;
+    const bottomRows = Math.min(5, gridHeight); // Use bottom 5 rows max
+    
+    // Create a list of all available positions in bottom rows
+    const availablePositions: Array<{x: number, y: number}> = [];
+    for (let y = gridHeight - bottomRows; y < gridHeight; y++) {
+      for (let x = 0; x < gridWidth; x++) {
+        availablePositions.push({x, y});
+      }
+    }
+    
+    // Shuffle the positions for random distribution
+    for (let i = availablePositions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [availablePositions[i], availablePositions[j]] = [availablePositions[j], availablePositions[i]];
+    }
+    
+    // Place exact number of air voxels
+    for (let i = 0; i < Math.min(targetAirVoxels, availablePositions.length); i++) {
+      const pos = availablePositions[i];
+      grid[pos.y][pos.x] = VOXEL_AIR;
+      airVoxelsPlaced++;
+    }
+    
     gridRef.current = grid;
     velocityRef.current = velocity;
-  }, [gridWidth, gridHeight, voxelScale]);
+    voxelLogRef.current = []; // Clear log on reset
+    
+    console.log(`Initialized grid: ${totalVoxels} total voxels, ${airVoxelsPlaced} air voxels (${(airVoxelsPlaced/totalVoxels*100).toFixed(2)}%)`);
+  }, [gridWidth, gridHeight, voxelScale, airPercentage]);
 
   // Main simulation loop
   useEffect(() => {
@@ -77,24 +113,14 @@ const BubbleSimulator = () => {
     };
 
     // Physics update using cellular automata approach
-    const updatePhysics = () => {
+    const updatePhysics = (frameCount: number) => {
       const grid = gridRef.current;
       const newGrid = grid.map(row => [...row]);
       const processed = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
 
-      // Spawn air bubbles at the bottom periodically
-      // Random spawn to create natural bubble streams
-      if (Math.random() < 0.15) {
-        const spawnX = Math.floor(Math.random() * (gridWidth - 10)) + 5;
-        const spawnWidth = Math.floor(Math.random() * 3) + 2; // 2-4 voxels wide
-        for (let x = spawnX; x < Math.min(spawnX + spawnWidth, gridWidth); x++) {
-          const bottomY = gridHeight - 1;
-          if (grid[bottomY][x] === VOXEL_WATER) {
-            newGrid[bottomY][x] = VOXEL_AIR;
-          }
-        }
-      }
-
+      // CLOSED SYSTEM: No air spawning during simulation
+      // Air is only initialized once at grid creation
+      
       // Process from bottom to top for water, top to bottom for air
       // This ensures proper settling behavior
       
@@ -162,6 +188,38 @@ const BubbleSimulator = () => {
       }
 
       gridRef.current = newGrid;
+      
+      // VALIDATION: Check if voxel counts remain constant (closed system)
+      // Log any discrepancies for debugging
+      // Skip first 120 frames to let system stabilize
+      if (frameCount > 120 && frameCount % 60 === 0) { // Check every 60 frames (~1 second)
+        let airCount = 0;
+        let waterCount = 0;
+        
+        for (let y = 0; y < gridHeight; y++) {
+          for (let x = 0; x < gridWidth; x++) {
+            if (newGrid[y][x] === VOXEL_AIR) airCount++;
+            else if (newGrid[y][x] === VOXEL_WATER) waterCount++;
+          }
+        }
+        
+        const totalVoxels = gridWidth * gridHeight;
+        const currentAirPercent = (airCount / totalVoxels) * 100;
+        const expectedAirPercent = airPercentage;
+        const tolerance = 0.1; // 0.1% tolerance for closed system
+        
+        // Log if percentages drift beyond tolerance
+        if (Math.abs(currentAirPercent - expectedAirPercent) > tolerance) {
+          const logEntry = {
+            frame: frameCount,
+            airCount,
+            waterCount,
+            airPercent: currentAirPercent
+          };
+          voxelLogRef.current.push(logEntry);
+          console.warn(`Frame ${frameCount}: Voxel count drift detected! Air: ${airCount} (${currentAirPercent.toFixed(2)}%), Expected: ${expectedAirPercent}%`);
+        }
+      }
     };
 
     // Find all connected components (bubbles) using flood fill
@@ -363,7 +421,9 @@ const BubbleSimulator = () => {
         if (contour.length < 3) continue;
         
         // Apply Chaikin's smoothing algorithm for surface tension effect
-        const smoothedContour = smoothPath(contour, 2);
+        // Surface tension slider controls smoothing iterations (0.0-1.0 -> 0-3 iterations)
+        const smoothingIterations = Math.round(surfaceTension * 3);
+        const smoothedContour = smoothPath(contour, smoothingIterations);
         
         // Draw the smoothed outline
         if (smoothedContour.length > 0) {
@@ -382,12 +442,15 @@ const BubbleSimulator = () => {
       }
     };
 
+    let frameCount = 0;
+    
     const animate = (currentTime: number) => {
       const deltaTime = currentTime - lastTime;
       lastTime = currentTime;
 
-      // Update physics once per frame
-      updatePhysics();
+      // Update physics once per frame with frame counter
+      updatePhysics(frameCount);
+      frameCount++;
 
       render();
 
@@ -406,7 +469,27 @@ const BubbleSimulator = () => {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [isRunning, gridWidth, gridHeight, voxelScale, gravity, convection]);
+  }, [isRunning, gridWidth, gridHeight, voxelScale, gravity, convection, surfaceTension, airPercentage]);
+  
+  // Function to save voxel drift log to a file
+  const saveVoxelLog = () => {
+    if (voxelLogRef.current.length === 0) {
+      alert('No voxel drift detected. System is stable!');
+      return;
+    }
+    
+    const logContent = JSON.stringify(voxelLogRef.current, null, 2);
+    const blob = new Blob([logContent], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `voxel-drift-log-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    alert(`Log saved with ${voxelLogRef.current.length} drift events`);
+  };
 
   return (
     <div style={{
@@ -423,12 +506,17 @@ const BubbleSimulator = () => {
         gap: '20px',
         alignItems: 'flex-start'
       }}>
-        {/* Simulation Canvas - Centered */}
+        {/* Simulation Canvas - Fixed container to prevent layout shifts */}
         <div style={{
           border: '2px solid #333',
           borderRadius: '8px',
           overflow: 'hidden',
-          backgroundColor: '#000'
+          backgroundColor: '#000',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          minWidth: '640px',
+          minHeight: '480px'
         }}>
           <canvas ref={canvasRef} />
         </div>
@@ -544,6 +632,60 @@ const BubbleSimulator = () => {
               display: 'block', 
               marginBottom: '8px' 
             }}>
+              Air Percentage: {airPercentage.toFixed(1)}%
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="8"
+              step="0.5"
+              value={airPercentage}
+              onChange={(e) => setAirPercentage(Number(e.target.value))}
+              style={{ width: '100%' }}
+            />
+            <p style={{ 
+              fontSize: '11px', 
+              marginTop: '4px', 
+              opacity: 0.75,
+              marginBottom: 0
+            }}>
+              Amount of air in closed system (max 8%)
+            </p>
+          </div>
+          
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ 
+              fontSize: '14px', 
+              display: 'block', 
+              marginBottom: '8px' 
+            }}>
+              Surface Tension: {surfaceTension.toFixed(2)}
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={surfaceTension}
+              onChange={(e) => setSurfaceTension(Number(e.target.value))}
+              style={{ width: '100%' }}
+            />
+            <p style={{ 
+              fontSize: '11px', 
+              marginTop: '4px', 
+              opacity: 0.75,
+              marginBottom: 0
+            }}>
+              Bubble outline smoothness (0=sharp, 1=smooth)
+            </p>
+          </div>
+          
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ 
+              fontSize: '14px', 
+              display: 'block', 
+              marginBottom: '8px' 
+            }}>
               Gravity: {gravity.toFixed(2)}
             </label>
             <input
@@ -604,12 +746,33 @@ const BubbleSimulator = () => {
               width: '100%',
               fontSize: '14px',
               fontWeight: '600',
-              transition: 'background-color 0.2s'
+              transition: 'background-color 0.2s',
+              marginBottom: '8px'
             }}
             onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#0052a3'}
             onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#0066cc'}
           >
             {isRunning ? 'Pause' : 'Resume'}
+          </button>
+          
+          <button
+            onClick={saveVoxelLog}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#666',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              width: '100%',
+              fontSize: '12px',
+              fontWeight: '500',
+              transition: 'background-color 0.2s'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#555'}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#666'}
+          >
+            Save Voxel Drift Log
           </button>
         </div>
       </div>
