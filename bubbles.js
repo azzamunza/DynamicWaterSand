@@ -24,8 +24,9 @@ const BubbleSimulator = () => {
   const [voxelScale, setVoxelScale] = useState(8);
   const [gravity, setGravity] = useState(0.1);
   const [convection, setConvection] = useState(0.5);
-  const [airPercentage, setAirPercentage] = useState(8); // Max 8% air in system
+  const [airPercentage, setAirPercentage] = useState(8); // Default 8% air in system
   const [surfaceTension, setSurfaceTension] = useState(0.5); // Controls bubble merging/separation
+  const [restartKey, setRestartKey] = useState(0); // Used to trigger grid re-initialization
   const animationRef = useRef(null);
   const gridRef = useRef([]);
   const velocityRef = useRef([]);
@@ -93,7 +94,7 @@ const BubbleSimulator = () => {
     voxelLogRef.current = []; // Clear log on reset
 
     console.log(`Initialized grid: ${totalVoxels} total voxels, ${airVoxelsPlaced} air voxels (${(airVoxelsPlaced / totalVoxels * 100).toFixed(2)}%)`);
-  }, [gridWidth, gridHeight, voxelScale, airPercentage]);
+  }, [gridWidth, gridHeight, voxelScale, airPercentage, restartKey]);
 
   // Main simulation loop
   useEffect(() => {
@@ -124,110 +125,6 @@ const BubbleSimulator = () => {
         }
       }
       return false;
-    };
-
-    // Physics update using cellular automata approach
-    const updatePhysics = frameCount => {
-      const grid = gridRef.current;
-      const newGrid = grid.map(row => [...row]);
-      const processed = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
-
-      // CLOSED SYSTEM: No air spawning during simulation
-      // Air is only initialized once at grid creation
-
-      // Process from bottom to top for water, top to bottom for air
-      // This ensures proper settling behavior
-
-      // First pass: Air bubbles rise (process top to bottom)
-      for (let y = 1; y < gridHeight; y++) {
-        for (let x = 0; x < gridWidth; x++) {
-          if (processed[y][x]) continue;
-          if (grid[y][x] === VOXEL_AIR && grid[y - 1][x] === VOXEL_WATER) {
-            // Air wants to rise - swap with water above
-            if (Math.random() < 0.7) {
-              // Probabilistic for more natural movement
-              newGrid[y - 1][x] = VOXEL_AIR;
-              newGrid[y][x] = VOXEL_WATER;
-              processed[y][x] = true;
-              processed[y - 1][x] = true;
-            }
-          }
-        }
-      }
-
-      // Second pass: Sideways spreading (air moves horizontally through water)
-      for (let y = 0; y < gridHeight; y++) {
-        for (let x = 0; x < gridWidth; x++) {
-          if (processed[y][x]) continue;
-          if (grid[y][x] === VOXEL_AIR && y > 0) {
-            // Check if air is blocked above
-            const blockedAbove = y === 0 || grid[y - 1][x] === VOXEL_AIR;
-            if (blockedAbove) {
-              // Try to spread sideways
-              const dirs = Math.random() < 0.5 ? [-1, 1] : [1, -1];
-              for (const dir of dirs) {
-                const nx = x + dir;
-                if (inBounds(nx, y) && grid[y][nx] === VOXEL_WATER && !processed[y][nx]) {
-                  if (Math.random() < 0.3 * convection) {
-                    newGrid[y][nx] = VOXEL_AIR;
-                    newGrid[y][x] = VOXEL_WATER;
-                    processed[y][x] = true;
-                    processed[y][nx] = true;
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Third pass: Water falls (process bottom to top)
-      for (let y = gridHeight - 2; y >= 0; y--) {
-        for (let x = 0; x < gridWidth; x++) {
-          if (processed[y][x]) continue;
-          if (grid[y][x] === VOXEL_WATER && grid[y + 1][x] === VOXEL_AIR) {
-            // Water wants to fall - swap with air below
-            if (Math.random() < 0.9) {
-              newGrid[y + 1][x] = VOXEL_WATER;
-              newGrid[y][x] = VOXEL_AIR;
-              processed[y][x] = true;
-              processed[y + 1][x] = true;
-            }
-          }
-        }
-      }
-      gridRef.current = newGrid;
-
-      // VALIDATION: Check if voxel counts remain constant (closed system)
-      // Log any discrepancies for debugging
-      // Skip first 120 frames to let system stabilize
-      if (frameCount > 120 && frameCount % 60 === 0) {
-        // Check every 60 frames (~1 second)
-        let airCount = 0;
-        let waterCount = 0;
-        for (let y = 0; y < gridHeight; y++) {
-          for (let x = 0; x < gridWidth; x++) {
-            if (newGrid[y][x] === VOXEL_AIR) airCount++;else if (newGrid[y][x] === VOXEL_WATER) waterCount++;
-          }
-        }
-        const totalVoxels = gridWidth * gridHeight;
-        const currentAirPercent = airCount / totalVoxels * 100;
-        const expectedAirPercent = airPercentage;
-        const tolerance = 0.1; // 0.1% tolerance for closed system
-
-        // Log if percentages drift beyond tolerance
-        if (Math.abs(currentAirPercent - expectedAirPercent) > tolerance) {
-          const logEntry = {
-            frame: frameCount,
-            airCount,
-            waterCount,
-            airPercent: currentAirPercent
-          };
-          voxelLogRef.current.push(logEntry);
-          console.warn(`Frame ${frameCount}: Voxel count drift detected! Air: ${airCount} (${currentAirPercent.toFixed(2)}%), Expected: ${expectedAirPercent}%`);
-        }
-      }
     };
 
     // Find all connected components (bubbles) using flood fill
@@ -275,6 +172,201 @@ const BubbleSimulator = () => {
         }
       }
       return bubbles;
+    };
+
+    // Physics update using cellular automata approach with enhanced bubble dynamics
+    const updatePhysics = frameCount => {
+      const grid = gridRef.current;
+      const velocity = velocityRef.current;
+      const newGrid = grid.map(row => [...row]);
+      const newVelocity = velocity.map(row => row.map(v => ({
+        ...v
+      })));
+      const processed = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
+
+      // CLOSED SYSTEM: No air spawning during simulation
+      // Air is only initialized once at grid creation
+
+      // Enhanced bubble dynamics with directional vectors
+      // Rising bubbles push water downward and attract trailing bubbles
+
+      // First pass: Apply buoyancy forces to velocity vectors
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (grid[y][x] === VOXEL_AIR) {
+            // Air has upward velocity from buoyancy
+            newVelocity[y][x].vy -= gravity * 2;
+
+            // Rising air pushes nearby water downward (convection)
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = x + dx;
+                const ny = y + dy;
+                if (inBounds(nx, ny) && grid[ny][nx] === VOXEL_WATER) {
+                  // Push water down and away
+                  const distance = Math.sqrt(dx * dx + dy * dy);
+                  newVelocity[ny][nx].vy += gravity * convection / distance;
+                  newVelocity[ny][nx].vx += dx * convection * 0.3 / distance;
+                }
+              }
+            }
+          } else if (grid[y][x] === VOXEL_WATER) {
+            // Water has downward velocity from gravity
+            newVelocity[y][x].vy += gravity * 0.5;
+          }
+        }
+      }
+
+      // Second pass: Bubble attraction (trailing bubbles move toward rising bubbles)
+      // This creates dome-like appearance
+      const bubbles = findBubbles();
+      for (const bubble of bubbles) {
+        if (bubble.length < 3) continue;
+
+        // Calculate bubble center and average upward velocity
+        let centerX = 0,
+          centerY = 0,
+          avgVy = 0;
+        for (const pos of bubble) {
+          centerX += pos.x;
+          centerY += pos.y;
+          avgVy += velocity[pos.y][pos.x].vy;
+        }
+        centerX /= bubble.length;
+        centerY /= bubble.length;
+        avgVy /= bubble.length;
+
+        // If bubble is rising (negative vy), attract nearby air voxels
+        if (avgVy < -0.05) {
+          const attractionRadius = 5 + surfaceTension * 10;
+          for (let y = Math.max(0, Math.floor(centerY - attractionRadius)); y < Math.min(gridHeight, Math.ceil(centerY + attractionRadius)); y++) {
+            for (let x = Math.max(0, Math.floor(centerX - attractionRadius)); x < Math.min(gridWidth, Math.ceil(centerX + attractionRadius)); x++) {
+              if (grid[y][x] === VOXEL_AIR) {
+                const dx = centerX - x;
+                const dy = centerY - y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 0 && dist < attractionRadius) {
+                  // Attract trailing air toward rising bubble
+                  const force = surfaceTension * 0.3 / (dist + 1);
+                  newVelocity[y][x].vx += dx * force;
+                  newVelocity[y][x].vy += dy * force * 0.5;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Third pass: Apply velocity damping
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          newVelocity[y][x].vx *= 0.85;
+          newVelocity[y][x].vy *= 0.85;
+        }
+      }
+
+      // Fourth pass: Air bubbles rise (process top to bottom)
+      for (let y = 1; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (processed[y][x]) continue;
+          if (grid[y][x] === VOXEL_AIR && grid[y - 1][x] === VOXEL_WATER) {
+            // Air wants to rise - swap with water above
+            const riseProb = 0.7 + Math.abs(velocity[y][x].vy) * 0.3;
+            if (Math.random() < Math.min(0.95, riseProb)) {
+              newGrid[y - 1][x] = VOXEL_AIR;
+              newGrid[y][x] = VOXEL_WATER;
+              // Transfer velocity
+              const tempVel = newVelocity[y][x];
+              newVelocity[y][x] = newVelocity[y - 1][x];
+              newVelocity[y - 1][x] = tempVel;
+              processed[y][x] = true;
+              processed[y - 1][x] = true;
+            }
+          }
+        }
+      }
+
+      // Fifth pass: Sideways spreading (air moves horizontally through water)
+      for (let y = 0; y < gridHeight; y++) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (processed[y][x]) continue;
+          if (grid[y][x] === VOXEL_AIR && y > 0) {
+            // Check if air is blocked above
+            const blockedAbove = y === 0 || grid[y - 1][x] === VOXEL_AIR;
+            if (blockedAbove) {
+              // Try to spread sideways based on velocity
+              const horizontalVel = velocity[y][x].vx;
+              const dir = horizontalVel > 0 ? 1 : horizontalVel < 0 ? -1 : Math.random() < 0.5 ? 1 : -1;
+              const nx = x + dir;
+              if (inBounds(nx, y) && grid[y][nx] === VOXEL_WATER && !processed[y][nx]) {
+                const moveProb = 0.3 * convection * (1 + Math.abs(horizontalVel));
+                if (Math.random() < Math.min(0.8, moveProb)) {
+                  newGrid[y][nx] = VOXEL_AIR;
+                  newGrid[y][x] = VOXEL_WATER;
+                  const tempVel = newVelocity[y][x];
+                  newVelocity[y][x] = newVelocity[y][nx];
+                  newVelocity[y][nx] = tempVel;
+                  processed[y][x] = true;
+                  processed[y][nx] = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Sixth pass: Water falls (process bottom to top)
+      for (let y = gridHeight - 2; y >= 0; y--) {
+        for (let x = 0; x < gridWidth; x++) {
+          if (processed[y][x]) continue;
+          if (grid[y][x] === VOXEL_WATER && grid[y + 1][x] === VOXEL_AIR) {
+            // Water wants to fall - swap with air below
+            const fallProb = 0.9 + Math.abs(velocity[y][x].vy) * 0.1;
+            if (Math.random() < Math.min(0.98, fallProb)) {
+              newGrid[y + 1][x] = VOXEL_WATER;
+              newGrid[y][x] = VOXEL_AIR;
+              const tempVel = newVelocity[y][x];
+              newVelocity[y][x] = newVelocity[y + 1][x];
+              newVelocity[y + 1][x] = tempVel;
+              processed[y][x] = true;
+              processed[y + 1][x] = true;
+            }
+          }
+        }
+      }
+      gridRef.current = newGrid;
+      velocityRef.current = newVelocity;
+
+      // VALIDATION: Check if voxel counts remain constant (closed system)
+      // Log any discrepancies for debugging
+      // Skip first 120 frames to let system stabilize
+      if (frameCount > 120 && frameCount % 60 === 0) {
+        // Check every 60 frames (~1 second)
+        let airCount = 0;
+        let waterCount = 0;
+        for (let y = 0; y < gridHeight; y++) {
+          for (let x = 0; x < gridWidth; x++) {
+            if (newGrid[y][x] === VOXEL_AIR) airCount++;else if (newGrid[y][x] === VOXEL_WATER) waterCount++;
+          }
+        }
+        const totalVoxels = gridWidth * gridHeight;
+        const currentAirPercent = airCount / totalVoxels * 100;
+        const expectedAirPercent = airPercentage;
+        const tolerance = 0.1; // 0.1% tolerance for closed system
+
+        // Log if percentages drift beyond tolerance
+        if (Math.abs(currentAirPercent - expectedAirPercent) > tolerance) {
+          const logEntry = {
+            frame: frameCount,
+            airCount,
+            waterCount,
+            airPercent: currentAirPercent
+          };
+          voxelLogRef.current.push(logEntry);
+          console.warn(`Frame ${frameCount}: Voxel count drift detected! Air: ${airCount} (${currentAirPercent.toFixed(2)}%), Expected: ${expectedAirPercent}%`);
+        }
+      }
     };
 
     // Moore-Neighbor tracing algorithm to extract bubble boundary
@@ -440,9 +532,7 @@ const BubbleSimulator = () => {
       // Find all bubbles (connected air voxel groups)
       const bubbles = findBubbles();
 
-      // Draw smooth white outline around each bubble
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
+      // Draw smooth white outline around each bubble with size-dependent styling
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       for (const bubble of bubbles) {
@@ -453,12 +543,18 @@ const BubbleSimulator = () => {
         if (contour.length < 3) continue;
 
         // Apply Chaikin's smoothing algorithm for surface tension effect
-        // Surface tension slider controls smoothing iterations (0.0-1.0 -> 0-3 iterations)
-        const smoothingIterations = Math.round(surfaceTension * 3);
+        // Higher surface tension = more smoothing iterations and larger apparent bubble size
+        const smoothingIterations = Math.round(surfaceTension * 4);
         const smoothedContour = smoothPath(contour, smoothingIterations);
 
-        // Draw the smoothed outline
+        // Draw the smoothed outline with variable line width based on bubble size
         if (smoothedContour.length > 0) {
+          // Bubble size affects line thickness and opacity for better visual distinction
+          const bubbleArea = bubble.length;
+          const lineWidth = 1.5 + Math.min(bubbleArea / 50, 2) * surfaceTension;
+          const alpha = 0.7 + 0.3 * surfaceTension;
+          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.lineWidth = lineWidth;
           ctx.beginPath();
           const firstPoint = smoothedContour[0];
           ctx.moveTo((firstPoint.x + 0.5) * voxelScale, (firstPoint.y + 0.5) * voxelScale);
@@ -468,6 +564,13 @@ const BubbleSimulator = () => {
           }
           ctx.closePath();
           ctx.stroke();
+
+          // For larger bubbles with high surface tension, add a subtle inner glow
+          if (bubbleArea > 30 && surfaceTension > 0.6) {
+            ctx.strokeStyle = `rgba(255, 255, 255, ${0.2 * surfaceTension})`;
+            ctx.lineWidth = lineWidth * 1.5;
+            ctx.stroke();
+          }
         }
       }
     };
@@ -660,7 +763,7 @@ const BubbleSimulator = () => {
   }, "Air Percentage: ", airPercentage.toFixed(1), "%"), /*#__PURE__*/React.createElement("input", {
     type: "range",
     min: "0",
-    max: "8",
+    max: "15",
     step: "0.5",
     value: airPercentage,
     onChange: e => setAirPercentage(Number(e.target.value)),
@@ -674,7 +777,7 @@ const BubbleSimulator = () => {
       opacity: 0.75,
       marginBottom: 0
     }
-  }, "Amount of air in closed system (max 8%)")), /*#__PURE__*/React.createElement("div", {
+  }, "Amount of air in closed system (0-15%)")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: '16px'
     }
@@ -701,7 +804,7 @@ const BubbleSimulator = () => {
       opacity: 0.75,
       marginBottom: 0
     }
-  }, "Bubble outline smoothness (0=sharp, 1=smooth)")), /*#__PURE__*/React.createElement("div", {
+  }, "Controls bubble merging, size, and smoothness")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: '16px'
     }
@@ -773,6 +876,26 @@ const BubbleSimulator = () => {
     onMouseOver: e => e.currentTarget.style.backgroundColor = '#0052a3',
     onMouseOut: e => e.currentTarget.style.backgroundColor = '#0066cc'
   }, isRunning ? 'Pause' : 'Resume'), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setRestartKey(prev => prev + 1);
+      setIsRunning(true);
+    },
+    style: {
+      padding: '10px 16px',
+      backgroundColor: '#00aa44',
+      color: 'white',
+      border: 'none',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      width: '100%',
+      fontSize: '14px',
+      fontWeight: '600',
+      transition: 'background-color 0.2s',
+      marginBottom: '8px'
+    },
+    onMouseOver: e => e.currentTarget.style.backgroundColor = '#008833',
+    onMouseOut: e => e.currentTarget.style.backgroundColor = '#00aa44'
+  }, "Restart"), /*#__PURE__*/React.createElement("button", {
     onClick: saveVoxelLog,
     style: {
       padding: '8px 12px',
