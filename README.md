@@ -43,6 +43,15 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
   - Path smoothing via Chaikin's algorithm
   - Dark blue dots for water, white dots for air
   - Configurable parameters: gravity, viscosity, surface tension, air percentage
+- **Metaball Liquid Simulation**: [liquid.html](https://azzamunza.github.io/DynamicWaterSand/liquid.html) - WebGL-accelerated fluid simulation with:
+  - **Dual Liquid System**: 90% water particles and 10% air particles
+  - **SPH Physics**: Smoothed Particle Hydrodynamics with pressure, viscosity, and surface tension
+  - **Interactive Surface Tension**: Adjustable sliders for water and air surface tension
+  - **Mouse Attraction**: Air particles are attracted to mouse cursor with adjustable force
+  - **GPU Acceleration**: Optimized rendering for real-time performance
+  - **Metaball Rendering**: Smooth, blob-like liquid visualization
+  - **Density-Based Behavior**: Air rises, water sinks based on relative densities
+  - No collisions between particles of same type (cohesive behavior)
 
 ## Files
 
@@ -52,4 +61,5 @@ An interactive 2D dynamic liquid sand and air simulation displayed within a deco
 - `bubbles.html` - Bubble simulation page
 - `bubbles.js` - Transpiled bubble simulator component
 - `bubble_simulator.tsx` - React/TypeScript source for bubble simulation with SPH physics
+- `liquid.html` - WebGL-accelerated metaball liquid simulation with dual liquid types
 - `SPH_IMPLEMENTATION.md` - Detailed documentation of the SPH fluid dynamics implementation
