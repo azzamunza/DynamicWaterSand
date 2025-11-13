@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="node_modules/p5/lib/p5.min.js"></script>
+  <script src="node_modules/matter-js/build/matter.min.js"></script>
+  <script src="node_modules/jquery/dist/jquery.min.js"></script>
+  <script src="node_modules/matter-attractors/build/matter-attractors.min.js"></script>
+  <link rel="stylesheet" type="text/css" href="css/stylesheet.css">
+  <link rel="stylesheet" href="node_modules/bootstrap/dist/css/bootstrap.min.css">
+</head>
+<body>
+  <div class="container">
+    <div class="row">
+    <div class="col" style="margin-top:50px">
+      <div class="card">
+        <div class="card-body" id="canvas">
+        </div>
+      </div>
+    </div>
+    <div class="col" id="ui">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="display-4">Settings</h5>
+        </div>
+        <div class="card-body">
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Threshold:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input id="threshold" type="range" min="1" max="8" step="0.1">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Resolution:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input id="resolution" type="range" min="1" max="20" step="1">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Rigid Bodies amount:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input style="padding: 5px; height: 100%;" type="number" id="particle-amount" class="form-control">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Display Rigid Bodies:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input type="checkbox" id="display-particles">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Lerp:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input type="checkbox" id="lerp">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Max Particle size:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input style="padding: 5px; height: 100%;" type="number" id="max-size" class="form-control">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-7">
+              <div class="lead">Min Particle size:</div>
+            </div>
+            <div class="col-5 align-self-center">
+              <input style="padding: 5px; height: 100%; margin-top: 3px;" type="number" id="min-size" class="form-control">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="js/ball.js"></script>
+  <script src="js/box.js"></script>
+  <script src="js/script.js"></script>
+</body>
+</html>
