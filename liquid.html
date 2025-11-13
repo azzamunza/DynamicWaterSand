@@ -42,6 +42,8 @@
             border-radius: 12px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
             min-width: 450px;
+            max-height: 600px;
+            overflow-y: auto;
         }
         
         .control-group {
@@ -111,6 +113,34 @@
             font-size: 14px;
         }
         
+        input[type="text"],
+        input[type="number"] {
+            padding: 8px 12px;
+            border: 2px solid #667eea;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: border-color 0.2s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #764ba2;
+            box-shadow: 0 0 8px rgba(102, 126, 234, 0.3);
+        }
+        
+        .input-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .input-group input[type="number"] {
+            flex: 1;
+            max-width: 120px;
+        }
+        
         h1 {
             color: white;
             text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
@@ -146,6 +176,30 @@
             margin-top: 10px;
             text-align: center;
         }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+            width: 100%;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -154,6 +208,22 @@
         <p class="subtitle">Move your mouse over the canvas to attract air particles</p>
         <canvas id="canvas" width="800" height="600"></canvas>
         <div class="controls">
+            <div class="control-group">
+                <label>Total Number of Particles</label>
+                <div class="input-group">
+                    <input type="number" id="particleCount" min="100" max="5000" value="1500" step="100">
+                </div>
+            </div>
+            <div class="control-group">
+                <label>
+                    <span class="liquid-indicator water-indicator"></span>
+                    Air-to-Water Ratio
+                </label>
+                <div class="slider-container">
+                    <input type="range" id="airWaterRatio" min="0" max="100" value="10" step="1">
+                    <span class="value-display" id="airWaterRatioValue">10%</span>
+                </div>
+            </div>
             <div class="control-group">
                 <label>
                     <span class="liquid-indicator water-indicator"></span>
@@ -183,7 +253,10 @@
                     <span class="value-display" id="mouseAttractionValue">50</span>
                 </div>
             </div>
-            <p class="info">Using WebGL for GPU-accelerated rendering • 90% Water • 10% Air</p>
+            <div class="control-group">
+                <button id="restartButton">Restart Simulation</button>
+            </div>
+            <p class="info">Using WebGL for GPU-accelerated rendering</p>
         </div>
     </div>
 
@@ -199,8 +272,8 @@
         const HEIGHT = 600;
         
         // Simulation parameters
-        const NUM_PARTICLES = 1500;
-        const WATER_RATIO = 0.9;
+        let NUM_PARTICLES = 1500;
+        let WATER_RATIO = 0.9;
         const AIR_RATIO = 0.1;
         const PARTICLE_RADIUS = 4;
         
@@ -216,6 +289,7 @@
         let waterSurfaceTension = 50;
         let airSurfaceTension = 30;
         let mouseAttractionForce = 50;
+        let airWaterRatio = 10;
         
         // Mouse state
         let mouseX = -1000;
@@ -236,23 +310,28 @@
             }
         }
         
-        // Initialize particles
-        const particles = [];
-        const numWater = Math.floor(NUM_PARTICLES * WATER_RATIO);
-        const numAir = NUM_PARTICLES - numWater;
+        // Particle initialization
+        let particles = [];
         
-        // Create water particles (90% - bottom area)
-        for (let i = 0; i < numWater; i++) {
-            const x = Math.random() * WIDTH;
-            const y = HEIGHT * 0.2 + Math.random() * HEIGHT * 0.8;
-            particles.push(new Particle(x, y, true));
-        }
-        
-        // Create air particles (10% - top area)
-        for (let i = 0; i < numAir; i++) {
-            const x = Math.random() * WIDTH;
-            const y = Math.random() * HEIGHT * 0.2;
-            particles.push(new Particle(x, y, false));
+        function initializeParticles() {
+            particles = [];
+            WATER_RATIO = 1 - (airWaterRatio / 100);
+            const numWater = Math.floor(NUM_PARTICLES * WATER_RATIO);
+            const numAir = NUM_PARTICLES - numWater;
+            
+            // Create water particles (bottom area)
+            for (let i = 0; i < numWater; i++) {
+                const x = Math.random() * WIDTH;
+                const y = HEIGHT * 0.2 + Math.random() * HEIGHT * 0.8;
+                particles.push(new Particle(x, y, true));
+            }
+            
+            // Create air particles (top area)
+            for (let i = 0; i < numAir; i++) {
+                const x = Math.random() * WIDTH;
+                const y = Math.random() * HEIGHT * 0.2;
+                particles.push(new Particle(x, y, false));
+            }
         }
         
         // Spatial grid for optimization
@@ -457,6 +536,18 @@
         }
         
         // UI event listeners
+        document.getElementById('particleCount').addEventListener('change', (e) => {
+            NUM_PARTICLES = Math.max(100, Math.min(5000, parseInt(e.target.value) || 1500));
+            e.target.value = NUM_PARTICLES;
+            initializeParticles();
+            initGrid();
+        });
+        
+        document.getElementById('airWaterRatio').addEventListener('input', (e) => {
+            airWaterRatio = parseFloat(e.target.value);
+            document.getElementById('airWaterRatioValue').textContent = airWaterRatio + '%';
+        });
+        
         document.getElementById('waterTension').addEventListener('input', (e) => {
             waterSurfaceTension = parseFloat(e.target.value);
             document.getElementById('waterTensionValue').textContent = waterSurfaceTension;
@@ -470,6 +561,11 @@
         document.getElementById('mouseAttraction').addEventListener('input', (e) => {
             mouseAttractionForce = parseFloat(e.target.value);
             document.getElementById('mouseAttractionValue').textContent = mouseAttractionForce;
+        });
+        
+        document.getElementById('restartButton').addEventListener('click', () => {
+            initializeParticles();
+            initGrid();
         });
         
         canvas.addEventListener('mousemove', (e) => {
@@ -486,6 +582,7 @@
         });
         
         // Initialize and start
+        initializeParticles();
         initGrid();
         animate();
     </script>
