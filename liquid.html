@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Liquid Simulation - Water and Air Physics</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/matter-attractors@0.1.6/build/matter-attractors.min.js"></script>
+    <script src="reference/node_modules/p5/lib/p5.min.js"></script>
+    <script src="reference/node_modules/matter-js/build/matter.min.js"></script>
+    <script src="reference/node_modules/matter-attractors/build/matter-attractors.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -301,8 +301,11 @@
             mouse.pixelRatio = pixelDensity();
             
             // Initialize 2d array for marching squares
-            for(let i = 0; i < rows; i++){
+            for(let i = 0; i < cols; i++){
                 data[i] = [];
+                for(let j = 0; j < rows; j++){
+                    data[i][j] = 0;
+                }
             }
             
             // Create attractor for air particles
