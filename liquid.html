@@ -192,8 +192,7 @@
         // Using Canvas 2D with optimized rendering (WebGL for future enhancement)
         
         const canvas = document.getElementById('canvas');
-        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-        const ctx2d = canvas.getContext('2d', { willReadFrequently: false });
+        const ctx2d = canvas.getContext('2d');
         
         // Use 2D context for now (WebGL particles would require more complex setup)
         const WIDTH = 800;
