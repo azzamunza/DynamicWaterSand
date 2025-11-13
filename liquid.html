@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Liquid Simulation - Water and Air Physics</title>
     <script src="reference/node_modules/p5/lib/p5.min.js"></script>
-    <script src="reference/node_modules/matter-js/build/matter.min.js"></script>
-    <script src="reference/node_modules/matter-attractors/build/matter-attractors.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -192,33 +190,17 @@
     </div>
 
     <script>
-        // Matter.js aliases
-        var Engine = Matter.Engine,
-            World = Matter.World,
-            Bodies = Matter.Bodies,
-            Body = Matter.Body,
-            Mouse = Matter.Mouse;
-        
-        // Use matter-attractors plugin
-        Matter.use('matter-attractors');
-        
         // Simulation parameters
         var w = 800, h = 600;
         var res = 8, threshold = 3;
-        var halfRes = parseInt(res / 2);
         var cols = parseInt(w / res + 1), rows = parseInt(h / res + 1);
         
-        var engine, world;
         var particles = [];
-        var obstacles = [];
-        var attractor;
-        var mouse;
         var data = [];
         
         // Control parameters
         var particleCount = 100;
         var airWaterRatio = 20; // Percentage of air particles
-        var attractorGravity = 0;
         
         // SPH parameters
         var SMOOTHING_RADIUS = 30;
@@ -226,79 +208,105 @@
         var PRESSURE_MULT = 0.3;
         var VISCOSITY = 0.05;
         var SURFACE_TENSION = 0.02;
+        var GRAVITY = 0.15;
+        var AIR_BUOYANCY = -0.08; // Negative gravity for air
+        var DAMPING = 0.98;
+        var MOUSE_ATTRACTION = 0.3;
         
-        // Particle class with SPH properties
+        // Mouse state
+        var mouseXPos = -1000;
+        var mouseYPos = -1000;
+        var isMousePressed = false;
+        
+        // Particle class (no rigid bodies)
         class Particle {
             constructor(x, y, isWater, radius) {
-                var options = {
-                    friction: 0,
-                    restitution: 0.85,
-                    density: isWater ? 0.002 : 0.0005 // Water is denser
-                };
-                this.body = Bodies.circle(x, y, radius, options);
-                this.r = 2 * radius;
                 this.x = x;
                 this.y = y;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = (Math.random() - 0.5) * 2;
+                this.r = radius;
                 this.isWater = isWater;
                 this.density = 0;
                 this.pressure = 0;
                 this.mass = isWater ? 1.0 : 0.3;
-                
-                // Apply different gravity to water vs air
-                if (!isWater) {
-                    // Air particles experience upward force (buoyancy)
-                    this.body.plugin.attractors = [
-                        function(bodyA, bodyB) {
-                            if (bodyA === this.body) {
-                                return {
-                                    x: 0,
-                                    y: -0.0001 // Upward buoyancy
-                                };
-                            }
-                        }.bind(this)
-                    ];
-                }
-                
-                World.add(world, this.body);
             }
             
             update() {
-                var pos = this.body.position;
-                this.x = pos.x;
-                this.y = pos.y;
-            }
-            
-            show() {
-                var pos = this.body.position;
-                fill(this.isWater ? color(74, 158, 255) : color(240, 240, 240));
-                circle(pos.x, pos.y, this.r);
+                // Apply gravity (water sinks, air rises)
+                var gravityForce = this.isWater ? GRAVITY : AIR_BUOYANCY;
+                this.vy += gravityForce;
+                
+                // Mouse attraction for air particles
+                if (!this.isWater && isMousePressed) {
+                    var dx = mouseXPos - this.x;
+                    var dy = mouseYPos - this.y;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > 0 && dist < 200) {
+                        var force = MOUSE_ATTRACTION / (dist + 1);
+                        this.vx += (dx / dist) * force;
+                        this.vy += (dy / dist) * force;
+                    }
+                }
+                
+                // Apply damping
+                this.vx *= DAMPING;
+                this.vy *= DAMPING;
+                
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Boundary collision with bounce
+                var bounce = 0.4;
+                if (this.x < this.r) {
+                    this.x = this.r;
+                    this.vx *= -bounce;
+                } else if (this.x > w - this.r) {
+                    this.x = w - this.r;
+                    this.vx *= -bounce;
+                }
+                if (this.y < this.r) {
+                    this.y = this.r;
+                    this.vy *= -bounce;
+                } else if (this.y > h - this.r) {
+                    this.y = h - this.r;
+                    this.vy *= -bounce;
+                }
+                
+                // Diagonal obstacle collision (centered, 45 degrees)
+                var obstacleX = w / 2;
+                var obstacleY = h / 2 - 50;
+                var obstacleW = w / 2;
+                var obstacleH = 100;
+                
+                // Rotate point to align with obstacle
+                var dx = this.x - obstacleX;
+                var dy = this.y - obstacleY;
+                var angle = Math.PI / 4;
+                var cos = Math.cos(-angle);
+                var sin = Math.sin(-angle);
+                var rotX = dx * cos - dy * sin;
+                var rotY = dx * sin + dy * cos;
+                
+                // Check collision with rotated rectangle
+                if (Math.abs(rotX) < obstacleW / 2 + this.r && 
+                    Math.abs(rotY) < obstacleH / 2 + this.r) {
+                    // Simple bounce away from center
+                    var pushX = this.x - obstacleX;
+                    var pushY = this.y - obstacleY;
+                    var pushDist = Math.sqrt(pushX * pushX + pushY * pushY);
+                    if (pushDist > 0) {
+                        this.vx += (pushX / pushDist) * 0.5;
+                        this.vy += (pushY / pushDist) * 0.5;
+                    }
+                }
             }
         }
         
         function setup() {
             var canvas = createCanvas(w, h);
             canvas.parent("canvas-container");
-            
-            engine = Engine.create();
-            world = engine.world;
-            world.gravity.y = 1; // Normal gravity
-            
-            // Create boundary walls
-            obstacles.push(Bodies.rectangle(w/2, 0, w, 15, { isStatic: true }));
-            obstacles.push(Bodies.rectangle(w/2, h, w, 15, { isStatic: true }));
-            obstacles.push(Bodies.rectangle(0, h/2, 15, h, { isStatic: true }));
-            obstacles.push(Bodies.rectangle(w, h/2, 15, h, { isStatic: true }));
-            
-            // Diagonal obstacle in center
-            obstacles.push(Bodies.rectangle(w/2, h/2 - 50, w/2, 100, { 
-                isStatic: true, 
-                angle: Math.PI / 4 
-            }));
-            
-            World.add(world, obstacles);
-            
-            mouse = Mouse.create(canvas.elt);
-            mouse.pixelRatio = pixelDensity();
             
             // Initialize 2d array for marching squares
             for(let i = 0; i < cols; i++){
@@ -308,62 +316,42 @@
                 }
             }
             
-            // Create attractor for air particles
-            attractor = Bodies.circle(width/2, height/2, 20, {
-                isStatic: true,
-                plugin: {
-                    attractors: [function(bodyA, bodyB) {
-                        // Only attract air particles
-                        var particleObj = particles.find(p => p.body === bodyB);
-                        if (particleObj && !particleObj.isWater) {
-                            return {
-                                x: (bodyA.position.x - bodyB.position.x) * attractorGravity,
-                                y: (bodyA.position.y - bodyB.position.y) * attractorGravity,
-                            };
-                        }
-                        return { x: 0, y: 0 };
-                    }]
-                }
-            });
-            World.add(world, attractor);
-            
             initParticles();
             setupUI();
         }
         
         function mousePressed() {
             if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
-                attractorGravity = 5e-6;
+                isMousePressed = true;
+                mouseXPos = mouseX;
+                mouseYPos = mouseY;
             }
         }
         
         function mouseDragged() {
             if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
-                Body.setPosition(attractor, {
-                    x: mouse.position.x,
-                    y: mouse.position.y
-                });
+                mouseXPos = mouseX;
+                mouseYPos = mouseY;
             }
         }
         
         function mouseReleased() {
-            attractorGravity = 0;
+            isMousePressed = false;
         }
         
         function draw() {
-            Engine.update(engine);
             background(255);
-            
-            // Update particle positions
-            for (var p of particles) {
-                p.update();
-            }
             
             // Calculate SPH densities and pressures
             calculateSPH();
             
             // Apply SPH forces
             applySPHForces();
+            
+            // Update all particles
+            for (var p of particles) {
+                p.update();
+            }
             
             // Calculate metaball field for marching squares
             for (let i = 0; i < cols; i++) {
@@ -375,6 +363,8 @@
             }
             
             // Draw marching squares contours
+            fill(0);
+            noStroke();
             for (let i = 0; i < cols - 1; i++) {
                 for (let j = 0; j < rows - 1; j++) {
                     let y = j * res;
@@ -404,11 +394,14 @@
                 }
             }
             
-            // Draw obstacles
+            // Draw diagonal obstacle
+            push();
             fill(66);
-            for(var obstacle of obstacles){
-                drawBody(obstacle);
-            }
+            translate(w/2, h/2 - 50);
+            rotate(PI / 4);
+            rectMode(CENTER);
+            rect(0, 0, w/2, 100);
+            pop();
         }
         
         function calculateSPH() {
@@ -452,8 +445,8 @@
                         
                         // Viscosity force
                         var influence = smoothingKernel(dist, SMOOTHING_RADIUS);
-                        var vx = n.body.velocity.x - p.body.velocity.x;
-                        var vy = n.body.velocity.y - p.body.velocity.y;
+                        var vx = n.vx - p.vx;
+                        var vy = n.vy - p.vy;
                         fx += vx * VISCOSITY * influence / (n.density + 0.0001);
                         fy += vy * VISCOSITY * influence / (n.density + 0.0001);
                         
@@ -466,7 +459,8 @@
                 }
                 
                 // Apply accumulated forces
-                Body.applyForce(p.body, p.body.position, { x: fx * 0.0001, y: fy * 0.0001 });
+                p.vx += fx;
+                p.vy += fy;
             }
         }
         
@@ -483,8 +477,6 @@
         }
         
         function drawSquareState(state, a, b, c, d, x, y) {
-            fill(0);
-            noStroke();
             switch (state) {
                 case 1:
                     triangle(c.x, c.y, d.x, d.y, x, y+res);
@@ -592,27 +584,6 @@
             }
         }
         
-        function drawBody(body) {
-            var pos = body.position;
-            var angle = body.angle;
-            push();
-            translate(pos.x, pos.y);
-            rotate(angle);
-            rectMode(CENTER);
-            if (body.circleRadius) {
-                circle(0, 0, body.circleRadius * 2);
-            } else {
-                var vertices = body.vertices;
-                beginShape();
-                for (var i = 0; i < vertices.length; i++) {
-                    var v = vertices[i];
-                    vertex(v.x - pos.x, v.y - pos.y);
-                }
-                endShape(CLOSE);
-            }
-            pop();
-        }
-        
         function convertToDec(a, b, c, d) {
             var state = "";
             state += a > threshold ? "1" : "0";
@@ -629,17 +600,13 @@
                 var dy = p.y - y;
                 var distSq = dx * dx + dy * dy;
                 if (distSq > 0) {
-                    sum += (p.r * p.r) / distSq;
+                    sum += (p.r * p.r * 4) / distSq;
                 }
             }
             return sum;
         }
         
         function initParticles() {
-            // Remove existing particles
-            for (var p of particles) {
-                World.remove(world, p.body);
-            }
             particles = [];
             
             var airCount = Math.floor(particleCount * airWaterRatio / 100);
